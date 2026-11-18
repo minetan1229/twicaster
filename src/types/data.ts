@@ -34,3 +34,18 @@ export interface LineGroupData {
 }
 
 export type LineGroupMap = Record<string, LineGroupData>;
+
+export type UserRole = 'admin' | 'bot_ob' | 'comon';
+
+export interface ServerConfig {
+  guildId: string;
+  serverName: string;
+  obUserId: string; // Discord user ID of the server OB owner
+  createdAt: string;
+}
+
+export interface SystemConfig {
+  adminUserIds: string[];
+  servers: Record<string, ServerConfig>; // guildId -> ServerConfig
+  fourSimApiKey?: string;
+}

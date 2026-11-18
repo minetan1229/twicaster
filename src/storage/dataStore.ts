@@ -1,16 +1,18 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import type { LineAccountMap, LineGroupMap } from '../types/data.js';
+import type { LineAccountMap, LineGroupMap, SystemConfig } from '../types/data.js';
 
 export class DataStore {
   private baseDir: string;
   private liPath: string;
   private grPath: string;
+  private configPath: string;
 
   constructor(baseDir: string = './data') {
     this.baseDir = path.resolve(baseDir);
     this.liPath = path.join(this.baseDir, 'li.json');
     this.grPath = path.join(this.baseDir, 'gr.json');
+    this.configPath = path.join(this.baseDir, 'config.json');
   }
 
   async init(): Promise<void> {
@@ -24,6 +26,11 @@ export class DataStore {
       await fs.access(this.grPath);
     } catch {
       await this.saveGroups({});
+    }
+    try {
+      await fs.access(this.configPath);
+    } catch {
+      await this.saveConfig({ adminUserIds: [], servers: {} });
     }
   }
 
@@ -66,5 +73,21 @@ export class DataStore {
 
   async saveGroups(groups: LineGroupMap): Promise<void> {
     await this.atomicWrite(this.grPath, groups);
+  }
+
+  async loadConfig(): Promise<SystemConfig> {
+    try {
+      const content = await fs.readFile(this.configPath, 'utf-8');
+      return JSON.parse(content) as SystemConfig;
+    } catch (err: unknown) {
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+        return { adminUserIds: [], servers: {} };
+      }
+      throw err;
+    }
+  }
+
+  async saveConfig(config: SystemConfig): Promise<void> {
+    await this.atomicWrite(this.configPath, config);
   }
 }
