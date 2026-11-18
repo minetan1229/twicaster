@@ -6,6 +6,8 @@ import { buildRequestHeaders } from '../shared/headers';
 let ffmpeg: FFmpeg | null = null;
 let ffmpegLoaded = false;
 
+chrome.runtime.sendMessage({ type: MessageType.OFFSCREEN_READY });
+
 async function initFFmpeg(): Promise<void> {
   if (ffmpegLoaded && ffmpeg) return;
   
@@ -127,10 +129,10 @@ async function clipVideo(
   const blob = new Blob([outputData], { type: 'video/mp4' });
   
   for (const file of segmentFiles) {
-    await ffmpeg.deleteFile?.(file) || ffmpeg.writeFile(file, new Uint8Array(0));
+    try { await ffmpeg.deleteFile?.(file); } catch {}
   }
-  await ffmpeg.deleteFile?.('concat.list') || ffmpeg.writeFile('concat.list', new Uint8Array(0));
-  await ffmpeg.deleteFile?.(outputFilename) || ffmpeg.writeFile(outputFilename, new Uint8Array(0));
+  try { await ffmpeg.deleteFile?.('concat.list'); } catch {}
+  try { await ffmpeg.deleteFile?.(outputFilename); } catch {}
   
   reportProgress({ stage: 'complete', progress: 100, message: 'Download complete!' });
   

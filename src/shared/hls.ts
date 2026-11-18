@@ -89,7 +89,7 @@ export function parseMediaPlaylist(text: string, baseUrl: string): MediaPlaylist
   const segments: HLSSegment[] = [];
   let targetDuration = 0;
   let mediaSequence = 0;
-  let isLive = false;
+  let isLive = true;
   let totalDuration = 0;
   let currentKey: HLSKey | null = null;
   let currentMap: HLSMap | null = null;

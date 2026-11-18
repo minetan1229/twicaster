@@ -136,23 +136,41 @@ chrome.runtime.onMessage.addListener((message: Message, sender, sendResponse) =>
       return true;
     }
     
+    const offscreenReadyPromise = new Promise<void>((resolve, reject) => {
+      const timeout = setTimeout(() => reject(new Error('Offscreen document ready timeout')), 10000);
+      
+      const listener = (msg: Message) => {
+        if (msg.type === MessageType.OFFSCREEN_READY) {
+          clearTimeout(timeout);
+          chrome.runtime.onMessage.removeListener(listener);
+          resolve();
+        }
+      };
+      chrome.runtime.onMessage.addListener(listener);
+    });
+    
     chrome.offscreen.createDocument({
       url: 'offscreen.html',
       reasons: ['AUDIO_PLAYBACK', 'CLIPBOARD'] as chrome.offscreen.Reason[],
       justification: 'Required for FFmpeg.wasm video processing',
-    }).then(() => {
-      chrome.runtime.sendMessage({
-        type: MessageType.DOWNLOAD_STREAM,
-        payload: {
-          streamId,
-          masterUrl: stream.masterUrl,
-          headers: stream.headers,
-          startTime,
-          endTime,
-          quality,
-          outputFilename,
-        },
-      });
+    }).then(async () => {
+      try {
+        await offscreenReadyPromise;
+        chrome.runtime.sendMessage({
+          type: MessageType.DOWNLOAD_STREAM,
+          payload: {
+            streamId,
+            masterUrl: stream.masterUrl,
+            headers: stream.headers,
+            startTime,
+            endTime,
+            quality,
+            outputFilename,
+          },
+        });
+      } catch (error) {
+        sendResponse({ type: MessageType.DOWNLOAD_ERROR, payload: { error: error instanceof Error ? error.message : 'Offscreen document failed to initialize' } });
+      }
     }).catch((error) => {
       sendResponse({ type: MessageType.DOWNLOAD_ERROR, payload: { error: error.message } });
     });

@@ -11,6 +11,8 @@ const DEFAULT_HEADERS = {
   'Priority': 'u=1, i',
 };
 
+const DEFAULT_USER_AGENT = typeof navigator !== 'undefined' ? navigator.userAgent : 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36';
+
 export function buildRequestHeaders(
   stream: CapturedStream,
   url: string
@@ -23,7 +25,7 @@ export function buildRequestHeaders(
     ...DEFAULT_HEADERS,
     'Origin': 'https://twitcasting.tv',
     'Referer': 'https://twitcasting.tv/',
-    'User-Agent': navigator.userAgent,
+    'User-Agent': DEFAULT_USER_AGENT,
   };
   
   if (stream.headers.Cookie) {

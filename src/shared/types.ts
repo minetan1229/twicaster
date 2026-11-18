@@ -80,6 +80,7 @@ export const MessageType = {
   DOWNLOAD_COMPLETE: 'DOWNLOAD_COMPLETE',
   DOWNLOAD_ERROR: 'DOWNLOAD_ERROR',
   CONTENT_READY: 'CONTENT_READY',
+  OFFSCREEN_READY: 'OFFSCREEN_READY',
 } as const;
 
 export type MessageTypeValue = typeof MessageType[keyof typeof MessageType];
