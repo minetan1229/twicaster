@@ -1,0 +1,45 @@
+{
+  "manifest_version": 3,
+  "name": "Twicaster - TwitCasting VOD Downloader",
+  "version": "1.0.0",
+  "description": "Download TwitCasting VODs with time-range selection",
+  "permissions": [
+    "debugger",
+    "activeTab",
+    "scripting",
+    "offscreen",
+    "downloads",
+    "cookies",
+    "storage"
+  ],
+  "host_permissions": [
+    "*://*.twitcasting.tv/*",
+    "*://dl*.twitcasting.tv/*"
+  ],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "offscreen": {
+    "reasons": ["AUDIO_PLAYBACK", "CLIPBOARD"],
+    "justify": "Required for FFmpeg.wasm video processing and downloading segments"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Twicaster - TwitCasting VOD Downloader"
+  },
+  "content_scripts": [
+    {
+      "matches": ["*://*.twitcasting.tv/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["ffmpeg-core/*"],
+      "matches": ["*://*.twitcasting.tv/*"]
+    }
+  ],
+  "minimum_chrome_version": "110"
+}

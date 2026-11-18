@@ -1,0 +1,21 @@
+{
+  "name": "twicaster-extension",
+  "version": "1.0.0",
+  "description": "TwitCasting VOD downloader Chrome extension",
+  "private": true,
+  "scripts": {
+    "build": "node build.mjs",
+    "dev": "node build.mjs --watch",
+    "lint": "eslint src --ext .ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/chrome": "^0.0.268",
+    "esbuild": "^0.21.0",
+    "typescript": "^5.4.0"
+  },
+  "dependencies": {
+    "@ffmpeg/ffmpeg": "^0.12.10",
+    "@ffmpeg/core": "^0.12.6"
+  }
+}
