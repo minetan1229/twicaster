@@ -1,0 +1,8 @@
+/agents.md
+/.agents/
+/.env
+.env
+.tool/
+node_modules/
+dist/
+.worktrees/
