@@ -80,4 +80,18 @@ export class PermissionManager {
     await this.store.saveConfig(config);
     return { success: true, message: `サーバー ${params.serverName} (OB: <@${params.obUserId}>) を設定しました。` };
   }
+
+  async set4SimApiKey(executorUserId: string, apiKey: string): Promise<{ success: boolean; message: string }> {
+    const role = await this.getUserRole(executorUserId);
+    if (role !== 'admin') {
+      return { success: false, message: '4sim APIキーの設定には管理者権限が必要です。' };
+    }
+
+    const config = await this.store.loadConfig();
+    config.fourSimApiKey = apiKey;
+    await this.store.saveConfig(config);
+
+    return { success: true, message: '4sim.net APIキーを登録しました。' };
+  }
 }
+
