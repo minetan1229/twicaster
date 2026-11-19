@@ -65,7 +65,7 @@ async function initFFmpeg(): Promise<void> {
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
     logDebug('error', 'FFmpeg初期化に失敗しました', msg);
-    throw new Error(`FFmpeg初期化エラー: ${msg}`);
+    throw new Error(`FFmpeg初期化エラー: ${msg}`, { cause: error });
   }
 }
 
