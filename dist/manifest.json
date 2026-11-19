@@ -13,16 +13,11 @@
     "storage"
   ],
   "host_permissions": [
-    "*://*.twitcasting.tv/*",
-    "*://dl*.twitcasting.tv/*"
+    "*://*.twitcasting.tv/*"
   ],
   "background": {
     "service_worker": "background.js",
     "type": "module"
-  },
-  "offscreen": {
-    "reasons": ["AUDIO_PLAYBACK", "CLIPBOARD"],
-    "justify": "Required for FFmpeg.wasm video processing and downloading segments"
   },
   "action": {
     "default_popup": "popup.html",
