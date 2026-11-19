@@ -1,2 +1,5 @@
 /main.py
 /agents.md
+node_modules/
+*.zip
+.tool/

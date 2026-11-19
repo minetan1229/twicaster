@@ -1,7 +1,39 @@
+// src/shared/types.ts
+var MessageType = {
+  GET_STREAMS: "GET_STREAMS",
+  STREAMS_LIST: "STREAMS_LIST",
+  STREAM_CAPTURED: "STREAM_CAPTURED",
+  DOWNLOAD_STREAM: "DOWNLOAD_STREAM",
+  DOWNLOAD_PROGRESS: "DOWNLOAD_PROGRESS",
+  DOWNLOAD_COMPLETE: "DOWNLOAD_COMPLETE",
+  DOWNLOAD_ERROR: "DOWNLOAD_ERROR",
+  CONTENT_READY: "CONTENT_READY",
+  CURRENT_TIME_UPDATE: "CURRENT_TIME_UPDATE",
+  GET_CURRENT_TIME: "GET_CURRENT_TIME",
+  CURRENT_TIME_RESPONSE: "CURRENT_TIME_RESPONSE",
+  STOP_RECORDING: "STOP_RECORDING",
+  STOP_DOWNLOAD: "STOP_DOWNLOAD",
+  RECORDING_STATE_CHANGE: "RECORDING_STATE_CHANGE",
+  DELETE_STREAM: "DELETE_STREAM",
+  CLEAR_ALL_STREAMS: "CLEAR_ALL_STREAMS",
+  GET_HISTORY: "GET_HISTORY",
+  HISTORY_LIST: "HISTORY_LIST",
+  DELETE_HISTORY: "DELETE_HISTORY",
+  OFFSCREEN_READY: "OFFSCREEN_READY",
+  CHECK_OFFSCREEN: "CHECK_OFFSCREEN"
+};
+
 // src/content/content.ts
-function extractVideoId() {
-  const path = window.location.pathname;
-  const match = path.match(/\/([a-zA-Z0-9]+)(?:\?|$)/);
+function extractVideoId(urlOrPath = window.location.pathname) {
+  const movieMatch = urlOrPath.match(/\/movie\/(\d+)/i);
+  if (movieMatch) {
+    return movieMatch[1];
+  }
+  const userMatch = urlOrPath.match(/twitcasting\.tv\/([a-zA-Z0-9_:]+)(?:\/|$|\?)/i) || urlOrPath.match(/^\/([a-zA-Z0-9_:]+)(?:\/|$|\?)/);
+  if (userMatch) {
+    return userMatch[1];
+  }
+  const match = urlOrPath.match(/\/([a-zA-Z0-9_:]+)(?:\?|$)/);
   return match ? match[1] : null;
 }
 function signalContentReady() {
@@ -33,7 +65,7 @@ function startCurrentTimeReporting() {
     if (timeInfo) {
       const videoId = extractVideoId();
       chrome.runtime.sendMessage({
-        type: "CURRENT_TIME_UPDATE",
+        type: MessageType.CURRENT_TIME_UPDATE,
         payload: {
           streamId: videoId || "unknown",
           currentTime: timeInfo.currentTime,
@@ -43,12 +75,46 @@ function startCurrentTimeReporting() {
     }
   }, 1e3);
 }
+function stopCurrentTimeReporting() {
+  if (currentTimeInterval) {
+    clearInterval(currentTimeInterval);
+    currentTimeInterval = null;
+  }
+}
+chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+  if (message && message.type === MessageType.GET_CURRENT_TIME) {
+    const timeInfo = getCurrentTime();
+    if (timeInfo) {
+      sendResponse({
+        type: MessageType.CURRENT_TIME_RESPONSE,
+        payload: {
+          currentTime: timeInfo.currentTime,
+          duration: timeInfo.duration,
+          updatedAt: Date.now()
+        }
+      });
+    } else {
+      sendResponse({
+        type: MessageType.CURRENT_TIME_RESPONSE,
+        payload: null
+      });
+    }
+    return true;
+  }
+  return false;
+});
 signalContentReady();
 startCurrentTimeReporting();
+window.addEventListener("beforeunload", () => {
+  stopCurrentTimeReporting();
+});
 var observer = new MutationObserver(() => {
   signalContentReady();
   startCurrentTimeReporting();
 });
 observer.observe(document.body, { childList: true, subtree: true });
 console.log("Twicaster content script loaded");
+export {
+  extractVideoId
+};
 //# sourceMappingURL=content.js.map

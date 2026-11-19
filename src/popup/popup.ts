@@ -39,7 +39,7 @@ function showStreamList(): void {
   renderStreamList();
 }
 
-function showStreamDetail(stream: CapturedStream): void {
+function showStreamDetail(stream: CapturedStream, preserveInputs = false): void {
   currentStream = stream;
   elements.streamListSection.classList.add('hidden');
   elements.streamDetail.classList.remove('hidden');
@@ -50,15 +50,20 @@ function showStreamDetail(stream: CapturedStream): void {
   const duration = stream.duration || 0;
   const endTime = duration > 0 ? duration : 0;
 
-  elements.startSeconds.value = '0';
-  elements.startHhmmss.value = '00:00:00';
-  elements.endSeconds.value = endTime.toString();
-  elements.endHhmmss.value = formatTime(endTime);
-  updateDurationDisplay();
+  if (!preserveInputs) {
+    elements.startSeconds.value = '0';
+    elements.startHhmmss.value = '00:00:00';
+    elements.endSeconds.value = endTime.toString();
+    elements.endHhmmss.value = formatTime(endTime);
+    updateDurationDisplay();
 
-  const baseName = stream.videoId || `twicast_${Date.now()}`;
-  elements.outputFilename.value = `${baseName}.mp4`;
+    const baseName = stream.videoId || `twicast_${Date.now()}`;
+    elements.outputFilename.value = `${baseName}.mp4`;
+  } else {
+    updateDurationDisplay();
+  }
 
+  const prevQuality = elements.qualitySelect.value;
   elements.qualitySelect.innerHTML = '<option value="auto">Auto (最高画質)</option>';
   if (stream.variants) {
     for (const variant of stream.variants) {
@@ -69,6 +74,9 @@ function showStreamDetail(stream: CapturedStream): void {
         elements.qualitySelect.appendChild(option);
       }
     }
+  }
+  if (prevQuality && Array.from(elements.qualitySelect.options).some(o => o.value === prevQuality)) {
+    elements.qualitySelect.value = prevQuality;
   }
 
   renderPresets(stream);
@@ -90,7 +98,9 @@ function showStreamDetail(stream: CapturedStream): void {
   }
 
   elements.downloadBtn.disabled = false;
-  resetProgress();
+  if (!preserveInputs) {
+    resetProgress();
+  }
 }
 
 function renderPresets(stream: CapturedStream): void {
@@ -99,7 +109,7 @@ function renderPresets(stream: CapturedStream): void {
   const serverTime = stream.liveInfo?.serverTime ? stream.liveInfo.serverTime * 1000 : Date.now();
   const now = Math.min(serverTime, Date.now());
   const programStart = stream.liveInfo?.programDateTime?.getTime() || now - duration * 1000;
-  const currentEndTime = isLive ? Math.floor((now - programStart) / 1000) : duration;
+  const currentEndTime = isLive ? Math.max(0, Math.floor((now - programStart) / 1000)) : duration;
 
   interface PresetConfig {
     label: string;
@@ -110,7 +120,7 @@ function renderPresets(stream: CapturedStream): void {
 
   const startPresets: PresetConfig[] = [
     { label: '00:00:00', value: 0 },
-    { label: '現在', value: currentEndTime, action: 'getCurrentTime' },
+    { label: '現在', value: isLive ? currentEndTime : 0, action: 'getCurrentTime' },
     { label: '-5分', delta: -300 },
     { label: '-30分', delta: -1800 },
     { label: '-1時間', delta: -3600 },
@@ -428,7 +438,8 @@ elements.downloadBtn.addEventListener('click', async () => {
   }
 
   const duration = currentStream.duration || Infinity;
-  const validation = validateTimeRange(startTime, endTime, duration);
+  const isLive = currentStream.type === 'live';
+  const validation = validateTimeRange(startTime, endTime, duration, isLive);
   if (!validation.valid) {
     showError(validation.error || '無効な時間範囲です');
     return;
@@ -467,7 +478,7 @@ chrome.runtime.onMessage.addListener((message: Message) => {
     if (!currentStream) {
       renderStreamList();
     } else if (currentStream.id === stream.id) {
-      showStreamDetail(stream);
+      showStreamDetail(stream, true);
     }
   }
 

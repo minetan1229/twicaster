@@ -80,7 +80,15 @@ async function getTabInfo(tabId: number): Promise<{ title: string; url: string }
 }
 
 function extractVideoId(url: string): string | undefined {
-  const match = url.match(/\/([a-zA-Z0-9]+)(?:\?|$)/);
+  const movieMatch = url.match(/\/movie\/(\d+)/i);
+  if (movieMatch) {
+    return movieMatch[1];
+  }
+  const userMatch = url.match(/twitcasting\.tv\/([a-zA-Z0-9_:]+)(?:\/|$|\?)/i) || url.match(/^\/([a-zA-Z0-9_:]+)(?:\/|$|\?)/);
+  if (userMatch) {
+    return userMatch[1];
+  }
+  const match = url.match(/\/([a-zA-Z0-9_:]+)(?:\?|$)/);
   return match ? match[1] : undefined;
 }
 
@@ -335,33 +343,60 @@ chrome.runtime.onMessage.addListener((message: Message, sender, sendResponse) =>
   
   if (message.type === MessageType.GET_CURRENT_TIME) {
     const { streamId } = message.payload as { streamId: string };
-    
-    const timeInfo = currentTimes.get(streamId);
-    
-    if (timeInfo) {
-      sendResponse({ type: MessageType.CURRENT_TIME_RESPONSE, payload: timeInfo });
-      return true;
-    }
-    
     const stream = capturedStreams.get(streamId);
-    if (stream?.liveInfo?.programDateTime && stream.liveInfo.serverTime) {
-      const now = Date.now();
-      const serverTimeMs = stream.liveInfo.serverTime * 1000;
-      const programStartMs = stream.liveInfo.programDateTime.getTime();
-      const elapsedSinceServerTime = now - serverTimeMs;
-      const currentTime = Math.floor((serverTimeMs - programStartMs + elapsedSinceServerTime) / 1000);
-      
-      const fallbackInfo: CurrentTimeInfo = {
-        streamId,
-        currentTime: Math.max(0, currentTime),
-        updatedAt: now,
-        duration: stream.duration,
-      };
-      sendResponse({ type: MessageType.CURRENT_TIME_RESPONSE, payload: fallbackInfo });
+
+    const respondWithFallback = () => {
+      let timeInfo = currentTimes.get(streamId);
+      if (!timeInfo && stream?.videoId) {
+        timeInfo = currentTimes.get(stream.videoId);
+      }
+
+      if (timeInfo) {
+        sendResponse({ type: MessageType.CURRENT_TIME_RESPONSE, payload: { ...timeInfo, streamId } });
+        return;
+      }
+
+      if (stream?.liveInfo?.programDateTime) {
+        const now = Date.now();
+        const serverTimeMs = (stream.liveInfo.serverTime || Math.floor(now / 1000)) * 1000;
+        const programStartMs = stream.liveInfo.programDateTime.getTime();
+        const elapsedSinceServerTime = now - serverTimeMs;
+        const currentTime = Math.floor((serverTimeMs - programStartMs + elapsedSinceServerTime) / 1000);
+
+        const fallbackInfo: CurrentTimeInfo = {
+          streamId,
+          currentTime: Math.max(0, currentTime),
+          updatedAt: now,
+          duration: stream.duration,
+        };
+        sendResponse({ type: MessageType.CURRENT_TIME_RESPONSE, payload: fallbackInfo });
+        return;
+      }
+
+      sendResponse({ type: MessageType.CURRENT_TIME_RESPONSE, payload: null });
+    };
+
+    if (stream?.tabId !== undefined) {
+      chrome.tabs.sendMessage(stream.tabId, { type: MessageType.GET_CURRENT_TIME }, (response: Message | undefined) => {
+        if (!chrome.runtime.lastError && response?.type === MessageType.CURRENT_TIME_RESPONSE && response.payload) {
+          const tabTimeInfo = response.payload as CurrentTimeInfo;
+          const updatedInfo: CurrentTimeInfo = {
+            ...tabTimeInfo,
+            streamId,
+          };
+          currentTimes.set(streamId, updatedInfo);
+          if (stream.videoId) {
+            currentTimes.set(stream.videoId, updatedInfo);
+          }
+          sendResponse({ type: MessageType.CURRENT_TIME_RESPONSE, payload: updatedInfo });
+        } else {
+          respondWithFallback();
+        }
+      });
       return true;
     }
-    
-    sendResponse({ type: MessageType.CURRENT_TIME_RESPONSE, payload: null });
+
+    respondWithFallback();
     return true;
   }
   
@@ -373,13 +408,16 @@ chrome.runtime.onMessage.addListener((message: Message, sender, sendResponse) =>
       actualStreamId = videoIdToStreamId.get(streamId)!;
     }
     
-    currentTimes.set(actualStreamId, {
+    const info: CurrentTimeInfo = {
       streamId: actualStreamId,
       currentTime,
       updatedAt: Date.now(),
       duration,
-    });
-    return false;
+    };
+    currentTimes.set(actualStreamId, info);
+    currentTimes.set(streamId, info);
+    sendResponse({ success: true });
+    return true;
   }
   
   if (message.type === MessageType.DOWNLOAD_STREAM) {

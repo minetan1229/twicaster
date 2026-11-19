@@ -58,11 +58,11 @@ function formatTime(seconds) {
   }
   return `${minutes.toString().padStart(2, "0")}:${secsFormatted}`;
 }
-function validateTimeRange(start, end, duration) {
+function validateTimeRange(start, end, duration, isLive) {
   if (start < 0) {
     return { valid: false, error: "Start time cannot be negative" };
   }
-  if (end > duration) {
+  if (!isLive && duration > 0 && end > duration) {
     return { valid: false, error: `End time exceeds video duration (${formatTime(duration)})` };
   }
   if (start >= end) {
@@ -110,7 +110,7 @@ function showStreamList() {
   elements.streamListSection.classList.remove("hidden");
   renderStreamList();
 }
-function showStreamDetail(stream) {
+function showStreamDetail(stream, preserveInputs = false) {
   currentStream = stream;
   elements.streamListSection.classList.add("hidden");
   elements.streamDetail.classList.remove("hidden");
@@ -118,13 +118,18 @@ function showStreamDetail(stream) {
   elements.streamUrl.textContent = stream.masterUrl;
   const duration = stream.duration || 0;
   const endTime = duration > 0 ? duration : 0;
-  elements.startSeconds.value = "0";
-  elements.startHhmmss.value = "00:00:00";
-  elements.endSeconds.value = endTime.toString();
-  elements.endHhmmss.value = formatTime(endTime);
-  updateDurationDisplay();
-  const baseName = stream.videoId || `twicast_${Date.now()}`;
-  elements.outputFilename.value = `${baseName}.mp4`;
+  if (!preserveInputs) {
+    elements.startSeconds.value = "0";
+    elements.startHhmmss.value = "00:00:00";
+    elements.endSeconds.value = endTime.toString();
+    elements.endHhmmss.value = formatTime(endTime);
+    updateDurationDisplay();
+    const baseName = stream.videoId || `twicast_${Date.now()}`;
+    elements.outputFilename.value = `${baseName}.mp4`;
+  } else {
+    updateDurationDisplay();
+  }
+  const prevQuality = elements.qualitySelect.value;
   elements.qualitySelect.innerHTML = '<option value="auto">Auto (\u6700\u9AD8\u753B\u8CEA)</option>';
   if (stream.variants) {
     for (const variant of stream.variants) {
@@ -135,6 +140,9 @@ function showStreamDetail(stream) {
         elements.qualitySelect.appendChild(option);
       }
     }
+  }
+  if (prevQuality && Array.from(elements.qualitySelect.options).some((o) => o.value === prevQuality)) {
+    elements.qualitySelect.value = prevQuality;
   }
   renderPresets(stream);
   if (stream.type === "live" && stream.liveInfo) {
@@ -153,7 +161,9 @@ function showStreamDetail(stream) {
     elements.streamLiveInfo.classList.add("hidden");
   }
   elements.downloadBtn.disabled = false;
-  resetProgress();
+  if (!preserveInputs) {
+    resetProgress();
+  }
 }
 function renderPresets(stream) {
   const duration = stream.duration || 0;
@@ -161,10 +171,10 @@ function renderPresets(stream) {
   const serverTime = stream.liveInfo?.serverTime ? stream.liveInfo.serverTime * 1e3 : Date.now();
   const now = Math.min(serverTime, Date.now());
   const programStart = stream.liveInfo?.programDateTime?.getTime() || now - duration * 1e3;
-  const currentEndTime = isLive ? Math.floor((now - programStart) / 1e3) : duration;
+  const currentEndTime = isLive ? Math.max(0, Math.floor((now - programStart) / 1e3)) : duration;
   const startPresets = [
     { label: "00:00:00", value: 0 },
-    { label: "\u73FE\u5728", value: currentEndTime, action: "getCurrentTime" },
+    { label: "\u73FE\u5728", value: isLive ? currentEndTime : 0, action: "getCurrentTime" },
     { label: "-5\u5206", delta: -300 },
     { label: "-30\u5206", delta: -1800 },
     { label: "-1\u6642\u9593", delta: -3600 }
@@ -430,7 +440,8 @@ elements.downloadBtn.addEventListener("click", async () => {
     return;
   }
   const duration = currentStream.duration || Infinity;
-  const validation = validateTimeRange(startTime, endTime, duration);
+  const isLive = currentStream.type === "live";
+  const validation = validateTimeRange(startTime, endTime, duration, isLive);
   if (!validation.valid) {
     showError(validation.error || "\u7121\u52B9\u306A\u6642\u9593\u7BC4\u56F2\u3067\u3059");
     return;
@@ -463,7 +474,7 @@ chrome.runtime.onMessage.addListener((message) => {
     if (!currentStream) {
       renderStreamList();
     } else if (currentStream.id === stream.id) {
-      showStreamDetail(stream);
+      showStreamDetail(stream, true);
     }
   }
   if (message.type === MessageType.DOWNLOAD_PROGRESS) {
