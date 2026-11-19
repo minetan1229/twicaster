@@ -4,7 +4,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { DiscordBot, loadEnv } from '../src/bot.js';
 import { DataStore } from '../src/storage/dataStore.js';
-import type { ChatInputCommandInteraction } from 'discord.js';
+import type { ChatInputCommandInteraction, AutocompleteInteraction } from 'discord.js';
 
 describe('DiscordBot', () => {
   let tmpDir: string;
@@ -41,8 +41,10 @@ describe('DiscordBot', () => {
       const commands = bot.getSlashCommandDefinitions();
       const names = commands.map((c) => c.name);
 
+      expect(names).toContain('help');
       expect(names).toContain('ping');
       expect(names).toContain('sys');
+      expect(names).toContain('tree');
       expect(names).toContain('restart');
       expect(names).toContain('set_admin');
       expect(names).toContain('set_server');
@@ -53,6 +55,24 @@ describe('DiscordBot', () => {
       expect(names).toContain('change_group');
       expect(names).toContain('del_group_id');
       expect(names).toContain('create_line');
+    });
+
+    it('should handle /help command', async () => {
+      const bot = new DiscordBot({ store });
+      const replyMock = vi.fn();
+      const interaction = {
+        commandName: 'help',
+        user: { id: 'u1' },
+        reply: replyMock,
+      } as unknown as ChatInputCommandInteraction;
+
+      await bot.handleCommand(interaction);
+      expect(replyMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          embeds: expect.arrayContaining([expect.anything()]),
+          ephemeral: true,
+        })
+      );
     });
 
     it('should handle /ping command', async () => {
@@ -400,7 +420,72 @@ describe('DiscordBot', () => {
       expect(groupsAfter['gid-100']).toBeUndefined();
     });
 
-    it('should handle /create_line command with 4sim API', async () => {
+    it('should handle /tree command', async () => {
+      const config = await store.loadConfig();
+      config.adminUserIds.push('admin1');
+      await store.saveConfig(config);
+
+      await store.saveGroups({
+        'gid-tree': {
+          name: 'Tree Group',
+          create_time: '2026-11-19T00:00:00Z',
+          ob_mid: 'ob1',
+          bot_status: {},
+        },
+      });
+
+      await store.saveAccounts({
+        u_in_grp: {
+          mid: 'm1',
+          account: {
+            token: 't1',
+            ip: '127.0.0.1',
+            logincount: 1,
+            last_login_time: '2026-11-19T00:00:00Z',
+            first_login_name: 'BotInGrp',
+          },
+          group_id: 'gid-tree',
+          status: 'active',
+          type: 'bot',
+        },
+        u_unassigned: {
+          mid: 'm2',
+          account: {
+            token: 't2',
+            ip: '127.0.0.1',
+            logincount: 1,
+            last_login_time: '2026-11-19T00:00:00Z',
+            first_login_name: 'SelfUnassigned',
+          },
+          group_id: '',
+          status: 'active',
+          type: 'self',
+        },
+      });
+
+      const bot = new DiscordBot({ store });
+      const replyMock = vi.fn();
+      const interaction = {
+        commandName: 'tree',
+        user: { id: 'admin1' },
+        reply: replyMock,
+      } as unknown as ChatInputCommandInteraction;
+
+      await bot.handleCommand(interaction);
+      expect(replyMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          content: expect.stringContaining('LINEグループ & アカウント構成ツリー'),
+          ephemeral: true,
+        })
+      );
+      const outputText = replyMock.mock.calls[0][0].content;
+      expect(outputText).toContain('Tree Group');
+      expect(outputText).toContain('BotInGrp');
+      expect(outputText).toContain('SelfUnassigned');
+      expect(outputText).toContain('未所属アカウント');
+    });
+
+    it('should handle /create_line command with 4sim API and deferReply', async () => {
       const config = await store.loadConfig();
       config.adminUserIds.push('admin1');
       config.fourSimApiKey = 'test-key';
@@ -408,6 +493,8 @@ describe('DiscordBot', () => {
 
       const bot = new DiscordBot({ store });
       const replyMock = vi.fn();
+      const deferReplyMock = vi.fn();
+      const editReplyMock = vi.fn();
 
       // fetch をモック
       const originalFetch = global.fetch;
@@ -423,19 +510,88 @@ describe('DiscordBot', () => {
           getString: vi.fn().mockReturnValue('thailand'),
         },
         reply: replyMock,
+        deferReply: deferReplyMock,
+        editReply: editReplyMock,
       } as unknown as ChatInputCommandInteraction;
 
       try {
         await bot.handleCommand(interaction);
-        expect(replyMock).toHaveBeenCalledWith(
+        expect(deferReplyMock).toHaveBeenCalledWith({ ephemeral: true });
+        expect(editReplyMock).toHaveBeenCalledWith(
           expect.objectContaining({
             content: expect.stringContaining('+66912345678'),
-            ephemeral: true,
           })
         );
       } finally {
         global.fetch = originalFetch;
       }
+    });
+
+    it('should handle autocomplete for uuid and group_id', async () => {
+      await store.saveGroups({
+        'gid-auto': {
+          name: 'Auto Group',
+          create_time: '2026-11-19T00:00:00Z',
+          ob_mid: '',
+          bot_status: {},
+        },
+      });
+
+      await store.saveAccounts({
+        'uuid-auto-1': {
+          mid: 'mid-auto',
+          account: {
+            token: 't',
+            ip: '127.0.0.1',
+            logincount: 1,
+            last_login_time: '2026-11-19T00:00:00Z',
+            first_login_name: 'BotAuto',
+          },
+          group_id: 'gid-auto',
+          status: 'active',
+          type: 'bot',
+        },
+      });
+
+      const bot = new DiscordBot({ store });
+      const respondMock = vi.fn();
+
+      // uuid autocomplete
+      const uuidInteraction = {
+        options: {
+          getFocused: vi.fn().mockReturnValue({ name: 'uuid', value: 'auto' }),
+        },
+        respond: respondMock,
+      } as unknown as AutocompleteInteraction;
+
+      await bot.handleAutocomplete(uuidInteraction);
+      expect(respondMock).toHaveBeenCalledWith(
+        expect.arrayContaining([
+          expect.objectContaining({
+            value: 'uuid-auto-1',
+            name: expect.stringContaining('BotAuto'),
+          }),
+        ])
+      );
+
+      // group_id autocomplete
+      respondMock.mockClear();
+      const gidInteraction = {
+        options: {
+          getFocused: vi.fn().mockReturnValue({ name: 'group_id', value: 'auto' }),
+        },
+        respond: respondMock,
+      } as unknown as AutocompleteInteraction;
+
+      await bot.handleAutocomplete(gidInteraction);
+      expect(respondMock).toHaveBeenCalledWith(
+        expect.arrayContaining([
+          expect.objectContaining({
+            value: 'gid-auto',
+            name: expect.stringContaining('Auto Group'),
+          }),
+        ])
+      );
     });
   });
 
