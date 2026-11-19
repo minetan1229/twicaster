@@ -1,15 +1,30 @@
-import { CapturedStream, Message, MessageType } from '../shared/types';
+import { CapturedStream, Message, MessageType, CurrentTimeInfo, LiveStreamInfo, HLSVariant, DownloadHistoryItem } from '../shared/types';
 import { buildRequestHeaders } from '../shared/headers';
+import { parseMasterPlaylist, parseMediaPlaylist, extractLiveInfo, selectHighestQuality } from '../shared/hls';
 
 const capturedStreams = new Map<string, CapturedStream>();
 const debuggerTabs = new Set<number>();
+const currentTimes = new Map<string, CurrentTimeInfo>();
+const recordingStates = new Map<string, { controller: AbortController; startTime: number }>();
+const videoIdToStreamId = new Map<string, string>();
+
+const MAX_HISTORY_ENTRIES = 100;
+const HISTORY_STORAGE_KEY = 'downloadHistory';
 
 function generateStreamId(): string {
   return `stream_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
 }
 
+function generateHistoryId(): string {
+  return `hist_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
+}
+
 function isMasterM3U8(url: string): boolean {
   return url.includes('master.m3u8');
+}
+
+function isLiveM3U8(url: string): boolean {
+  return url.includes('tc.livehls') && url.includes('media.m3u8');
 }
 
 async function attachDebugger(tabId: number): Promise<void> {
@@ -63,6 +78,120 @@ function extractVideoId(url: string): string | undefined {
   return match ? match[1] : undefined;
 }
 
+async function fetchLivePlaylist(masterUrl: string, headers: Record<string, string>): Promise<LiveStreamInfo | null> {
+  try {
+    const response = await fetch(masterUrl, {
+      method: 'GET',
+      headers: new Headers(headers),
+      credentials: 'include',
+    });
+    if (!response.ok) return null;
+    const text = await response.text();
+    const baseUrl = masterUrl.substring(0, masterUrl.lastIndexOf('/') + 1);
+    const playlist = parseMediaPlaylist(text, baseUrl);
+    return extractLiveInfo(playlist);
+  } catch {
+    return null;
+  }
+}
+
+async function fetchDurationAndVariants(stream: CapturedStream): Promise<{ duration?: number; variants?: HLSVariant[] }> {
+  try {
+    const headers = buildRequestHeaders(stream, stream.masterUrl);
+    
+    if (stream.type === 'live') {
+      const response = await fetch(stream.masterUrl, {
+        method: 'GET',
+        headers: new Headers(headers),
+        credentials: 'include',
+      });
+      if (!response.ok) return {};
+      const text = await response.text();
+      const baseUrl = stream.masterUrl.substring(0, stream.masterUrl.lastIndexOf('/') + 1);
+      const mediaPlaylist = parseMediaPlaylist(text, baseUrl);
+      return { duration: mediaPlaylist.totalDuration || undefined };
+    } else {
+      const masterResponse = await fetch(stream.masterUrl, {
+        method: 'GET',
+        headers: new Headers(headers),
+        credentials: 'include',
+      });
+      if (!masterResponse.ok) return {};
+      const masterText = await masterResponse.text();
+      const baseUrl = stream.masterUrl.substring(0, stream.masterUrl.lastIndexOf('/') + 1);
+      const variants = parseMasterPlaylist(masterText, baseUrl);
+      
+      if (variants.length === 0) return { variants };
+      
+      const selectedVariant = selectHighestQuality(variants);
+      if (!selectedVariant) return { variants };
+      
+      const mediaResponse = await fetch(selectedVariant.uri, {
+        method: 'GET',
+        headers: new Headers(headers),
+        credentials: 'include',
+      });
+      if (!mediaResponse.ok) return { variants };
+      const mediaText = await mediaResponse.text();
+      const mediaBaseUrl = selectedVariant.uri.substring(0, selectedVariant.uri.lastIndexOf('/') + 1);
+      const mediaPlaylist = parseMediaPlaylist(mediaText, mediaBaseUrl);
+      
+      return { duration: mediaPlaylist.totalDuration || undefined, variants };
+    }
+  } catch (error) {
+    console.error('Failed to fetch duration/variants:', error);
+    return {};
+  }
+}
+
+async function loadHistory(): Promise<DownloadHistoryItem[]> {
+  try {
+    const result = await chrome.storage.local.get(HISTORY_STORAGE_KEY);
+    return result[HISTORY_STORAGE_KEY] || [];
+  } catch {
+    return [];
+  }
+}
+
+async function saveHistory(history: DownloadHistoryItem[]): Promise<void> {
+  try {
+    await chrome.storage.local.set({ [HISTORY_STORAGE_KEY]: history });
+  } catch (error) {
+    console.error('Failed to save history:', error);
+  }
+}
+
+async function addHistoryEntry(entry: Omit<DownloadHistoryItem, 'id' | 'timestamp' | 'status'>): Promise<DownloadHistoryItem> {
+  const history = await loadHistory();
+  const newEntry: DownloadHistoryItem = {
+    ...entry,
+    id: generateHistoryId(),
+    timestamp: Date.now(),
+    status: 'pending',
+  };
+  history.unshift(newEntry);
+  if (history.length > MAX_HISTORY_ENTRIES) {
+    history.splice(MAX_HISTORY_ENTRIES);
+  }
+  await saveHistory(history);
+  return newEntry;
+}
+
+async function updateHistoryEntry(id: string, updates: Partial<DownloadHistoryItem>): Promise<void> {
+  const history = await loadHistory();
+  const index = history.findIndex(h => h.id === id);
+  if (index >= 0) {
+    history[index] = { ...history[index], ...updates };
+    await saveHistory(history);
+  }
+}
+
+async function deleteHistoryEntry(id: string): Promise<void> {
+  const history = await loadHistory();
+  const filtered = history.filter(h => h.id !== id);
+  await saveHistory(filtered);
+}
+
 chrome.debugger.onEvent.addListener(async (source, method, params?: object) => {
   const tabId = source.tabId;
   
@@ -74,8 +203,8 @@ chrome.debugger.onEvent.addListener(async (source, method, params?: object) => {
     const request = p.request as { url: string; headers: Record<string, string> };
     const documentURL = p.documentURL as string;
     
-    if (isMasterM3U8(request.url)) {
-      console.log('Captured master.m3u8:', request.url);
+    if (isMasterM3U8(request.url) || isLiveM3U8(request.url)) {
+      console.log('Captured m3u8:', request.url);
       
       const tabInfo = await getTabInfo(tabId);
       const cookieHeader = await extractCookies();
@@ -86,6 +215,13 @@ chrome.debugger.onEvent.addListener(async (source, method, params?: object) => {
       };
       
       const streamId = generateStreamId();
+      const isLive = isLiveM3U8(request.url);
+      let liveInfo: LiveStreamInfo | undefined;
+      
+      if (isLive) {
+        liveInfo = await fetchLivePlaylist(request.url, headers) || { isLive: true };
+      }
+      
       const stream: CapturedStream = {
         id: streamId,
         masterUrl: request.url,
@@ -94,23 +230,41 @@ chrome.debugger.onEvent.addListener(async (source, method, params?: object) => {
         tabId,
         tabTitle: tabInfo?.title || 'Unknown',
         videoId: extractVideoId(documentURL || ''),
+        type: isLive ? 'live' : 'vod',
+        liveInfo,
       };
       
       capturedStreams.set(streamId, stream);
       
-      const message: Message = {
+      if (stream.videoId) {
+        videoIdToStreamId.set(stream.videoId, streamId);
+      }
+      
+      const initialMessage: Message = {
         type: MessageType.STREAM_CAPTURED,
         payload: stream,
       };
+      chrome.runtime.sendMessage(initialMessage).catch(() => {});
       
-      chrome.runtime.sendMessage(message).catch(() => {});
+      fetchDurationAndVariants(stream).then(({ duration, variants }) => {
+        const updatedStream = capturedStreams.get(streamId);
+        if (updatedStream) {
+          if (duration !== undefined) updatedStream.duration = duration;
+          if (variants !== undefined) updatedStream.variants = variants;
+          capturedStreams.set(streamId, updatedStream);
+          
+          chrome.runtime.sendMessage({
+            type: MessageType.STREAM_CAPTURED,
+            payload: updatedStream,
+          }).catch(() => {});
+        }
+      });
     }
   }
   
   if (method === 'Network.responseReceived') {
-    const requestId = p.requestId as string;
-    const response = p.response as Record<string, unknown>;
-    // We could capture response headers here if needed
+    const _requestId = p.requestId as string;
+    const _response = p.response as Record<string, unknown>;
   }
 });
 
@@ -119,6 +273,55 @@ chrome.runtime.onMessage.addListener((message: Message, sender, sendResponse) =>
     const streams = Array.from(capturedStreams.values());
     sendResponse({ type: MessageType.STREAMS_LIST, payload: streams });
     return true;
+  }
+  
+  if (message.type === MessageType.GET_CURRENT_TIME) {
+    const { streamId } = message.payload as { streamId: string };
+    
+    const timeInfo = currentTimes.get(streamId);
+    
+    if (timeInfo) {
+      sendResponse({ type: MessageType.CURRENT_TIME_RESPONSE, payload: timeInfo });
+      return true;
+    }
+    
+    const stream = capturedStreams.get(streamId);
+    if (stream?.liveInfo?.programDateTime && stream.liveInfo.serverTime) {
+      const now = Date.now();
+      const serverTimeMs = stream.liveInfo.serverTime * 1000;
+      const programStartMs = stream.liveInfo.programDateTime.getTime();
+      const elapsedSinceServerTime = now - serverTimeMs;
+      const currentTime = Math.floor((serverTimeMs - programStartMs + elapsedSinceServerTime) / 1000);
+      
+      const fallbackInfo: CurrentTimeInfo = {
+        streamId,
+        currentTime: Math.max(0, currentTime),
+        updatedAt: now,
+        duration: stream.duration,
+      };
+      sendResponse({ type: MessageType.CURRENT_TIME_RESPONSE, payload: fallbackInfo });
+      return true;
+    }
+    
+    sendResponse({ type: MessageType.CURRENT_TIME_RESPONSE, payload: null });
+    return true;
+  }
+  
+  if (message.type === MessageType.CURRENT_TIME_UPDATE) {
+    const { streamId, currentTime, duration } = message.payload as { streamId: string; currentTime: number; duration?: number };
+    
+    let actualStreamId = streamId;
+    if (videoIdToStreamId.has(streamId)) {
+      actualStreamId = videoIdToStreamId.get(streamId)!;
+    }
+    
+    currentTimes.set(actualStreamId, {
+      streamId: actualStreamId,
+      currentTime,
+      updatedAt: Date.now(),
+      duration,
+    });
+    return false;
   }
   
   if (message.type === MessageType.DOWNLOAD_STREAM) {
@@ -136,45 +339,170 @@ chrome.runtime.onMessage.addListener((message: Message, sender, sendResponse) =>
       return true;
     }
     
-    const offscreenReadyPromise = new Promise<void>((resolve, reject) => {
-      const timeout = setTimeout(() => reject(new Error('Offscreen document ready timeout')), 10000);
-      
-      const listener = (msg: Message) => {
-        if (msg.type === MessageType.OFFSCREEN_READY) {
-          clearTimeout(timeout);
-          chrome.runtime.onMessage.removeListener(listener);
-          resolve();
-        }
-      };
-      chrome.runtime.onMessage.addListener(listener);
+    const controller = new AbortController();
+    
+    // Add history entry with pending status
+    addHistoryEntry({
+      streamId,
+      filename: outputFilename,
+      startTime,
+      endTime,
+      fileSize: 0,
+    }).then(historyEntry => {
+      // Send history ID to offscreen so it can update on completion
+      chrome.runtime.sendMessage({
+        type: MessageType.DOWNLOAD_STREAM,
+        payload: {
+          streamId,
+          masterUrl: stream.masterUrl,
+          headers: stream.headers,
+          startTime,
+          endTime,
+          quality,
+          outputFilename,
+          isLive: stream.type === 'live',
+          variants: stream.variants,
+          historyId: historyEntry.id,
+        },
+      });
     });
+    
+    if (stream.type === 'live') {
+      recordingStates.set(streamId, { controller, startTime: Date.now() });
+      chrome.runtime.sendMessage({
+        type: MessageType.RECORDING_STATE_CHANGE,
+        payload: { streamId, state: 'recording' },
+      });
+    }
     
     chrome.offscreen.createDocument({
       url: 'offscreen.html',
       reasons: ['AUDIO_PLAYBACK', 'CLIPBOARD'] as chrome.offscreen.Reason[],
       justification: 'Required for FFmpeg.wasm video processing',
-    }).then(async () => {
-      try {
-        await offscreenReadyPromise;
-        chrome.runtime.sendMessage({
-          type: MessageType.DOWNLOAD_STREAM,
-          payload: {
-            streamId,
-            masterUrl: stream.masterUrl,
-            headers: stream.headers,
-            startTime,
-            endTime,
-            quality,
-            outputFilename,
-          },
-        });
-      } catch (error) {
-        sendResponse({ type: MessageType.DOWNLOAD_ERROR, payload: { error: error instanceof Error ? error.message : 'Offscreen document failed to initialize' } });
-      }
     }).catch((error) => {
       sendResponse({ type: MessageType.DOWNLOAD_ERROR, payload: { error: error.message } });
+      recordingStates.delete(streamId);
     });
     
+    return true;
+  }
+  
+  if (message.type === MessageType.DOWNLOAD_COMPLETE) {
+    const { streamId, historyId, fileSize } = message.payload as { 
+      streamId: string; 
+      historyId?: string;
+      fileSize?: number;
+    };
+    
+    if (historyId) {
+      updateHistoryEntry(historyId, { 
+        status: 'success', 
+        fileSize: fileSize || 0 
+      });
+    }
+    
+    const stream = capturedStreams.get(streamId);
+    if (stream?.type === 'live') {
+      recordingStates.delete(streamId);
+      chrome.runtime.sendMessage({
+        type: MessageType.RECORDING_STATE_CHANGE,
+        payload: { streamId, state: 'stopped' },
+      });
+    }
+    return true;
+  }
+  
+  if (message.type === MessageType.DOWNLOAD_ERROR) {
+    const { streamId, historyId, error } = message.payload as { 
+      streamId: string; 
+      historyId?: string;
+      error?: string;
+    };
+    
+    if (historyId) {
+      updateHistoryEntry(historyId, { 
+        status: 'failed', 
+        error 
+      });
+    }
+    
+    const errorStream = capturedStreams.get(streamId);
+    if (errorStream?.type === 'live') {
+      recordingStates.delete(streamId);
+      chrome.runtime.sendMessage({
+        type: MessageType.RECORDING_STATE_CHANGE,
+        payload: { streamId, state: 'stopped' },
+      });
+    }
+    return true;
+  }
+  
+  if (message.type === MessageType.STOP_DOWNLOAD) {
+    const { streamId } = message.payload as { streamId: string };
+    const recording = recordingStates.get(streamId);
+    if (recording) {
+      recording.controller.abort();
+      recordingStates.delete(streamId);
+      chrome.runtime.sendMessage({
+        type: MessageType.RECORDING_STATE_CHANGE,
+        payload: { streamId, state: 'stopped' },
+      });
+      sendResponse({ success: true });
+    } else {
+      sendResponse({ success: false, error: 'No active download' });
+    }
+    return true;
+  }
+  
+  if (message.type === MessageType.STOP_RECORDING) {
+    const { streamId } = message.payload as { streamId: string };
+    const recording = recordingStates.get(streamId);
+    if (recording) {
+      recording.controller.abort();
+      recordingStates.delete(streamId);
+      chrome.runtime.sendMessage({
+        type: MessageType.RECORDING_STATE_CHANGE,
+        payload: { streamId, state: 'stopped' },
+      });
+      sendResponse({ success: true });
+    } else {
+      sendResponse({ success: false, error: 'No active recording' });
+    }
+    return true;
+  }
+  
+  if (message.type === MessageType.DELETE_STREAM) {
+    const { streamId } = message.payload as { streamId: string };
+    const stream = capturedStreams.get(streamId);
+    if (stream?.videoId) {
+      videoIdToStreamId.delete(stream.videoId);
+    }
+    capturedStreams.delete(streamId);
+    currentTimes.delete(streamId);
+    sendResponse({ success: true });
+    return true;
+  }
+  
+  if (message.type === MessageType.CLEAR_ALL_STREAMS) {
+    capturedStreams.clear();
+    currentTimes.clear();
+    videoIdToStreamId.clear();
+    sendResponse({ success: true });
+    return true;
+  }
+  
+  if (message.type === MessageType.GET_HISTORY) {
+    loadHistory().then(history => {
+      sendResponse({ type: MessageType.HISTORY_LIST, payload: history });
+    });
+    return true;
+  }
+  
+  if (message.type === MessageType.DELETE_HISTORY) {
+    const { id } = message.payload as { id: string };
+    deleteHistoryEntry(id).then(() => {
+      sendResponse({ success: true });
+    });
     return true;
   }
   

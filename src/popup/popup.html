@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="ja">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -10,70 +10,129 @@
   <div class="container">
     <header>
       <h1>Twicaster</h1>
-      <p class="subtitle">TwitCasting VOD Downloader</p>
+      <p class="subtitle">TwitCasting VOD/Live Downloader</p>
     </header>
-    
-    <div id="stream-list" class="section">
-      <h2>Captured Streams</h2>
-      <div id="streams"></div>
-      <button id="refresh-btn" class="btn btn-secondary">Refresh</button>
+
+    <div class="tabs">
+      <button class="tab active" data-tab="vod" role="tab" aria-selected="true">VOD</button>
+      <button class="tab" data-tab="live" role="tab" aria-selected="false">ライブ</button>
+      <button class="tab" data-tab="recording" role="tab" aria-selected="false">録画中</button>
+      <button class="tab" data-tab="history" role="tab" aria-selected="false">履歴</button>
     </div>
-    
+
+    <div class="tab-panels">
+      <div class="tab-panel active" data-tab="vod" role="tabpanel">
+        <div id="empty-state" class="hidden">
+          <p>ストリームが捕獲されていません。</p>
+          <p>TwitCastingのVOD/ライブページを開くと自動的に検出されます。</p>
+        </div>
+        <div id="streams"></div>
+        <button id="refresh-btn" class="btn btn-secondary">更新</button>
+      </div>
+
+      <div class="tab-panel hidden" data-tab="live" role="tabpanel">
+        <div id="live-empty" class="hidden">
+          <p>ライブ配信が検出されていません。</p>
+        </div>
+        <div id="live-streams"></div>
+      </div>
+
+      <div class="tab-panel hidden" data-tab="recording" role="tabpanel">
+        <div id="recording-empty" class="hidden">
+          <p>録画中の配信はありません。</p>
+        </div>
+        <div id="recording-streams"></div>
+      </div>
+
+      <div class="tab-panel hidden" data-tab="history" role="tabpanel">
+        <div id="history-empty" class="hidden">
+          <p>ダウンロード履歴がありません。</p>
+        </div>
+        <div id="history-streams"></div>
+      </div>
+    </div>
+
     <div id="stream-detail" class="section hidden">
-      <button id="back-btn" class="btn btn-link">← Back</button>
+      <button id="back-btn" class="btn btn-link">← 戻る</button>
       <h2 id="stream-title"></h2>
       <p id="stream-url" class="stream-url"></p>
-      
+      <p id="stream-live-info" class="stream-live-info hidden"></p>
+
       <div class="form-group">
-        <label>Quality</label>
+        <label>画質</label>
         <select id="quality-select">
-          <option value="auto">Auto (Highest)</option>
+          <option value="auto">Auto (最高画質)</option>
         </select>
       </div>
-      
+
       <div class="form-group">
-        <label>Start Time</label>
+        <label>開始時間</label>
         <div class="time-inputs">
-          <input type="text" id="start-seconds" placeholder="Seconds" title="Time in seconds">
+          <input type="text" id="start-seconds" placeholder="秒数" title="秒数で指定">
           <span class="separator">⇄</span>
-          <input type="text" id="start-hhmmss" placeholder="HH:MM:SS" title="Time in HH:MM:SS format">
+          <input type="text" id="start-hhmmss" placeholder="HH:MM:SS" title="HH:MM:SS形式で指定">
         </div>
+        <div id="start-presets" class="preset-buttons"></div>
       </div>
-      
+
       <div class="form-group">
-        <label>End Time</label>
+        <label>終了時間</label>
         <div class="time-inputs">
-          <input type="text" id="end-seconds" placeholder="Seconds" title="Time in seconds">
+          <input type="text" id="end-seconds" placeholder="秒数" title="秒数で指定">
           <span class="separator">⇄</span>
-          <input type="text" id="end-hhmmss" placeholder="HH:MM:SS" title="Time in HH:MM:SS format">
+          <input type="text" id="end-hhmmss" placeholder="HH:MM:SS" title="HH:MM:SS形式で指定">
         </div>
+        <div id="end-presets" class="preset-buttons"></div>
       </div>
-      
+
       <div class="form-group">
-        <label>Duration</label>
+        <label>時間範囲</label>
         <div id="duration-display" class="duration-display">00:00:00</div>
       </div>
-      
+
       <div class="form-group">
-        <label>Output Filename</label>
+        <label>出力ファイル名</label>
         <input type="text" id="output-filename" placeholder="video.mp4">
       </div>
-      
+
       <div id="progress-container" class="hidden">
         <div class="progress-bar">
           <div id="progress-fill" class="progress-fill"></div>
         </div>
         <p id="progress-message" class="progress-message"></p>
+        <p id="progress-detail" class="progress-detail"></p>
       </div>
-      
-      <button id="download-btn" class="btn btn-primary" disabled>Download</button>
+
+      <button id="download-btn" class="btn btn-primary" disabled>ダウンロード</button>
+      <button id="download-all-btn" class="btn btn-secondary hidden">全長ダウンロード</button>
       <p id="error-message" class="error-message hidden"></p>
     </div>
-    
-    <div id="empty-state" class="hidden">
-      <p>No streams captured yet.</p>
-      <p>Open a TwitCasting VOD page to capture streams.</p>
+
+    <div id="about-modal" class="modal hidden">
+      <div class="modal-backdrop"></div>
+      <div class="modal-content">
+        <button class="modal-close" aria-label="閉じる">&times;</button>
+        <h2>Twicaster について</h2>
+        <p>TwitCastingのVODおよびライブ配信をダウンロードする拡張機能です。</p>
+        <p>バージョン: <span id="modal-version"></span></p>
+      </div>
     </div>
+
+    <div id="confirm-modal" class="modal hidden">
+      <div class="modal-backdrop"></div>
+      <div class="modal-content">
+        <p id="confirm-message"></p>
+        <div class="modal-actions">
+          <button id="confirm-cancel" class="btn btn-secondary">キャンセル</button>
+          <button id="confirm-ok" class="btn btn-primary">OK</button>
+        </div>
+      </div>
+    </div>
+
+    <footer>
+      <button id="about-btn" class="btn btn-link">バージョン <span id="version"></span></button>
+      <span id="storage-info"></span>
+    </footer>
   </div>
   <script type="module" src="popup.js"></script>
 </body>
