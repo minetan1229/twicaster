@@ -1,8 +1,10 @@
-import { CapturedStream, Message, MessageType, DownloadProgress, CurrentTimeInfo } from '../shared/types';
+import { CapturedStream, Message, MessageType, DownloadProgress, CurrentTimeInfo, PopupState } from '../shared/types';
 import { parseTimeInput, formatTime, validateTimeRange } from '../shared/time';
 
 let currentStream: CapturedStream | null = null;
 let streams: CapturedStream[] = [];
+
+const POPUP_STATE_STORAGE_KEY = 'twicasterPopupState';
 
 const elements = {
   streamListSection: document.getElementById('stream-list-section')!,
@@ -30,13 +32,97 @@ const elements = {
   errorMessage: document.getElementById('error-message')!,
   version: document.getElementById('version')!,
   storageInfo: document.getElementById('storage-info')!,
+  debugModeToggle: document.getElementById('debug-mode-toggle') as HTMLInputElement,
+  debugSection: document.getElementById('debug-section')!,
+  debugLogs: document.getElementById('debug-logs')!,
+  copyDebugLogsBtn: document.getElementById('copy-debug-logs-btn') as HTMLButtonElement,
+  clearDebugLogsBtn: document.getElementById('clear-debug-logs-btn') as HTMLButtonElement,
 };
+
+let debugLogsList: string[] = [];
+
+function appendDebugLog(entry: { timestamp: number; source: string; level: string; message: string; details?: unknown }): void {
+  const timeStr = new Date(entry.timestamp).toLocaleTimeString();
+  const detailStr = entry.details !== undefined ? ` | ${typeof entry.details === 'object' ? JSON.stringify(entry.details) : entry.details}` : '';
+  const logLine = `[${timeStr}] [${entry.source}] [${entry.level.toUpperCase()}] ${entry.message}${detailStr}`;
+  debugLogsList.push(logLine);
+  if (debugLogsList.length > 200) debugLogsList.shift();
+
+  if (!elements.debugSection.classList.contains('hidden')) {
+    const div = document.createElement('div');
+    div.className = `debug-log-entry ${entry.level}`;
+    div.textContent = logLine;
+    elements.debugLogs.appendChild(div);
+    elements.debugLogs.scrollTop = elements.debugLogs.scrollHeight;
+  }
+}
+
+function loadDebugLogs(): void {
+  chrome.runtime.sendMessage({ type: MessageType.GET_DEBUG_LOGS }, (res: Message | undefined) => {
+    if (res && res.type === MessageType.DEBUG_LOGS_RESPONSE && Array.isArray(res.payload)) {
+      elements.debugLogs.innerHTML = '';
+      debugLogsList = [];
+      for (const item of res.payload) {
+        appendDebugLog(item);
+      }
+    }
+  });
+}
+
+async function savePopupState(): Promise<void> {
+  const state: PopupState = {
+    currentStreamId: currentStream ? currentStream.id : null,
+    startSeconds: elements.startSeconds.value,
+    startHhmmss: elements.startHhmmss.value,
+    endSeconds: elements.endSeconds.value,
+    endHhmmss: elements.endHhmmss.value,
+    quality: elements.qualitySelect.value,
+    outputFilename: elements.outputFilename.value,
+    debugModeEnabled: elements.debugModeToggle.checked,
+  };
+  try {
+    await chrome.storage.local.set({ [POPUP_STATE_STORAGE_KEY]: state });
+  } catch {
+    // Ignore storage errors
+  }
+}
+
+async function restorePopupState(): Promise<void> {
+  try {
+    const result = await chrome.storage.local.get(POPUP_STATE_STORAGE_KEY);
+    const state = result[POPUP_STATE_STORAGE_KEY] as PopupState | undefined;
+    if (!state) return;
+
+    if (state.debugModeEnabled) {
+      elements.debugModeToggle.checked = true;
+      elements.debugSection.classList.remove('hidden');
+      loadDebugLogs();
+    }
+
+    if (state.currentStreamId) {
+      const found = streams.find(s => s.id === state.currentStreamId);
+      if (found) {
+        showStreamDetail(found, true);
+        if (state.startSeconds !== undefined) elements.startSeconds.value = state.startSeconds;
+        if (state.startHhmmss !== undefined) elements.startHhmmss.value = state.startHhmmss;
+        if (state.endSeconds !== undefined) elements.endSeconds.value = state.endSeconds;
+        if (state.endHhmmss !== undefined) elements.endHhmmss.value = state.endHhmmss;
+        if (state.quality !== undefined) elements.qualitySelect.value = state.quality;
+        if (state.outputFilename !== undefined) elements.outputFilename.value = state.outputFilename;
+        updateDurationDisplay();
+      }
+    }
+  } catch {
+    // Ignore storage errors
+  }
+}
 
 function showStreamList(): void {
   currentStream = null;
   elements.streamDetail.classList.add('hidden');
   elements.streamListSection.classList.remove('hidden');
   renderStreamList();
+  savePopupState();
 }
 
 function showStreamDetail(stream: CapturedStream, preserveInputs = false): void {
@@ -162,6 +248,7 @@ function renderPresets(stream: CapturedStream): void {
             elements.startSeconds.value = value.toString();
             elements.startHhmmss.value = formatTime(value);
             updateDurationDisplay();
+            savePopupState();
           }
         );
         return;
@@ -180,6 +267,7 @@ function renderPresets(stream: CapturedStream): void {
         elements.startSeconds.value = nextVal.toString();
         elements.startHhmmss.value = formatTime(nextVal);
         updateDurationDisplay();
+        savePopupState();
         return;
       }
 
@@ -187,6 +275,7 @@ function renderPresets(stream: CapturedStream): void {
       elements.startSeconds.value = value.toString();
       elements.startHhmmss.value = formatTime(value);
       updateDurationDisplay();
+      savePopupState();
     });
   });
 
@@ -204,6 +293,7 @@ function renderPresets(stream: CapturedStream): void {
             elements.endSeconds.value = value.toString();
             elements.endHhmmss.value = formatTime(value);
             updateDurationDisplay();
+            savePopupState();
           }
         );
         return;
@@ -222,6 +312,7 @@ function renderPresets(stream: CapturedStream): void {
         elements.endSeconds.value = nextVal.toString();
         elements.endHhmmss.value = formatTime(nextVal);
         updateDurationDisplay();
+        savePopupState();
         return;
       }
 
@@ -229,6 +320,7 @@ function renderPresets(stream: CapturedStream): void {
       elements.endSeconds.value = value.toString();
       elements.endHhmmss.value = formatTime(value);
       updateDurationDisplay();
+      savePopupState();
     });
   });
 }
@@ -342,6 +434,7 @@ function renderStreamList(): void {
     item.addEventListener('click', (e) => {
       if ((e.target as HTMLElement).closest('.btn-delete')) return;
       showStreamDetail(stream);
+      savePopupState();
     });
 
     item.querySelector('.btn-delete')!.addEventListener('click', (e) => {
@@ -415,14 +508,75 @@ function setVersion(): void {
   elements.version.textContent = manifest.version;
 }
 
+function restoreActiveDownload(): void {
+  chrome.runtime.sendMessage({ type: MessageType.GET_DOWNLOAD_STATUS }, (res: Message | undefined) => {
+    if (res && res.type === MessageType.DOWNLOAD_STATUS_RESPONSE && res.payload) {
+      const { streamId, progress } = res.payload as { streamId: string | null; progress: DownloadProgress | null };
+      if (streamId && progress) {
+        if (!currentStream || currentStream.id !== streamId) {
+          const s = streams.find(item => item.id === streamId);
+          if (s) {
+            showStreamDetail(s, true);
+          }
+        }
+        showProgress(progress);
+      }
+    }
+  });
+}
+
 elements.backBtn.addEventListener('click', () => {
   showStreamList();
 });
 
-elements.startSeconds.addEventListener('input', () => syncTimeInputs('seconds', 'start'));
-elements.startHhmmss.addEventListener('input', () => syncTimeInputs('hhmmss', 'start'));
-elements.endSeconds.addEventListener('input', () => syncTimeInputs('seconds', 'end'));
-elements.endHhmmss.addEventListener('input', () => syncTimeInputs('hhmmss', 'end'));
+elements.startSeconds.addEventListener('input', () => {
+  syncTimeInputs('seconds', 'start');
+  savePopupState();
+});
+elements.startHhmmss.addEventListener('input', () => {
+  syncTimeInputs('hhmmss', 'start');
+  savePopupState();
+});
+elements.endSeconds.addEventListener('input', () => {
+  syncTimeInputs('seconds', 'end');
+  savePopupState();
+});
+elements.endHhmmss.addEventListener('input', () => {
+  syncTimeInputs('hhmmss', 'end');
+  savePopupState();
+});
+elements.qualitySelect.addEventListener('change', () => {
+  savePopupState();
+});
+elements.outputFilename.addEventListener('input', () => {
+  savePopupState();
+});
+
+elements.debugModeToggle.addEventListener('change', () => {
+  if (elements.debugModeToggle.checked) {
+    elements.debugSection.classList.remove('hidden');
+    loadDebugLogs();
+  } else {
+    elements.debugSection.classList.add('hidden');
+  }
+  savePopupState();
+});
+
+elements.copyDebugLogsBtn.addEventListener('click', () => {
+  navigator.clipboard.writeText(debugLogsList.join('\n')).then(() => {
+    elements.copyDebugLogsBtn.textContent = 'コピー完了';
+    setTimeout(() => {
+      elements.copyDebugLogsBtn.textContent = 'コピー';
+    }, 1500);
+  });
+});
+
+elements.clearDebugLogsBtn.addEventListener('click', () => {
+  chrome.runtime.sendMessage({ type: MessageType.CLEAR_DEBUG_LOGS }, () => {
+    elements.debugLogs.innerHTML = '';
+    debugLogsList = [];
+  });
+});
 
 elements.downloadBtn.addEventListener('click', async () => {
   if (!currentStream) return;
@@ -494,11 +648,19 @@ chrome.runtime.onMessage.addListener((message: Message) => {
     const error = (message.payload as { error?: string })?.error || 'ダウンロードに失敗しました';
     showError(error);
   }
+
+  if (message.type === MessageType.DEBUG_LOG) {
+    appendDebugLog(message.payload as { timestamp: number; source: string; level: string; message: string; details?: unknown });
+  }
 });
 
-loadStreams();
-setVersion();
-updateStorageInfo();
-setInterval(updateStorageInfo, 30000);
+(async () => {
+  await loadStreams();
+  await restorePopupState();
+  restoreActiveDownload();
+  setVersion();
+  updateStorageInfo();
+  setInterval(updateStorageInfo, 30000);
+})();
 
 console.log('Twicaster popup loaded');

@@ -1,4 +1,4 @@
-import { CapturedStream, Message, MessageType, CurrentTimeInfo, LiveStreamInfo, HLSVariant, DownloadHistoryItem } from '../shared/types';
+import { CapturedStream, Message, MessageType, CurrentTimeInfo, LiveStreamInfo, HLSVariant, DownloadHistoryItem, DebugLogEntry, DownloadProgress } from '../shared/types';
 import { buildRequestHeaders } from '../shared/headers';
 import { parseMasterPlaylist, parseMediaPlaylist, extractLiveInfo, selectHighestQuality } from '../shared/hls';
 
@@ -7,9 +7,62 @@ const debuggerTabs = new Set<number>();
 const currentTimes = new Map<string, CurrentTimeInfo>();
 const recordingStates = new Map<string, { controller: AbortController; startTime: number }>();
 const videoIdToStreamId = new Map<string, string>();
+const debugLogs: DebugLogEntry[] = [];
+let currentDownloadProgress: DownloadProgress | null = null;
+let currentDownloadStreamId: string | null = null;
 
 const MAX_HISTORY_ENTRIES = 100;
 const HISTORY_STORAGE_KEY = 'downloadHistory';
+const STREAMS_STORAGE_KEY = 'savedStreams';
+const MAX_DEBUG_LOGS = 200;
+
+function logDebug(level: 'info' | 'warn' | 'error', message: string, details?: unknown): void {
+  const entry: DebugLogEntry = {
+    timestamp: Date.now(),
+    source: 'background',
+    level,
+    message,
+    details: details instanceof Error ? details.message : details,
+  };
+  debugLogs.push(entry);
+  if (debugLogs.length > MAX_DEBUG_LOGS) {
+    debugLogs.shift();
+  }
+  console[level](`[Background] ${message}`, details !== undefined ? details : '');
+  chrome.runtime.sendMessage({
+    type: MessageType.DEBUG_LOG,
+    payload: entry,
+  }).catch(() => {});
+}
+
+async function persistStreams(): Promise<void> {
+  try {
+    const list = Array.from(capturedStreams.values());
+    await chrome.storage.local.set({ [STREAMS_STORAGE_KEY]: list });
+  } catch (e) {
+    logDebug('warn', 'Failed to persist streams to storage', e);
+  }
+}
+
+async function restoreStreams(): Promise<void> {
+  try {
+    const result = await chrome.storage.local.get(STREAMS_STORAGE_KEY);
+    const saved = result[STREAMS_STORAGE_KEY] as CapturedStream[] | undefined;
+    if (saved && Array.isArray(saved)) {
+      for (const s of saved) {
+        if (!capturedStreams.has(s.id)) {
+          capturedStreams.set(s.id, s);
+          if (s.videoId) {
+            videoIdToStreamId.set(s.videoId, s.id);
+          }
+        }
+      }
+      logDebug('info', `ストレージから ${saved.length} 件のストリームを復元しました`);
+    }
+  } catch (e) {
+    logDebug('warn', 'Failed to restore streams from storage', e);
+  }
+}
 
 function generateStreamId(): string {
   return `stream_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
@@ -214,48 +267,75 @@ async function ensureOffscreenDocument(): Promise<void> {
     contextTypes: [chrome.runtime.ContextType.OFFSCREEN_DOCUMENT],
   });
   if (existingContexts.length > 0) {
+    logDebug('info', '既存のオフスクリーンドキュメントが検出されました');
     return;
   }
 
   if (creatingOffscreenPromise) {
-    await creatingOffscreenPromise;
-    return;
+    return creatingOffscreenPromise;
   }
 
-  creatingOffscreenPromise = new Promise<void>((resolve, reject) => {
-    const timeout = setTimeout(() => {
-      chrome.runtime.onMessage.removeListener(readyListener);
-      reject(new Error('Offscreen document ready timeout'));
-    }, 15000);
+  creatingOffscreenPromise = (async () => {
+    logDebug('info', 'オフスクリーンドキュメントの生成開始');
+    return new Promise<void>((resolve, reject) => {
+      let resolved = false;
+      let pingInterval: ReturnType<typeof setInterval> | null = null;
 
-    const readyListener = (msg: Message) => {
-      if (msg.type === MessageType.OFFSCREEN_READY) {
+      const cleanup = () => {
+        if (pingInterval) clearInterval(pingInterval);
         clearTimeout(timeout);
         chrome.runtime.onMessage.removeListener(readyListener);
-        resolve();
-      }
-    };
-    chrome.runtime.onMessage.addListener(readyListener);
+      };
 
-    chrome.offscreen.createDocument({
-      url: 'offscreen.html',
-      reasons: ['AUDIO_PLAYBACK', 'CLIPBOARD'] as chrome.offscreen.Reason[],
-      justification: 'Required for FFmpeg.wasm video processing',
-    }).catch(err => {
-      clearTimeout(timeout);
-      chrome.runtime.onMessage.removeListener(readyListener);
-      // If document was created in the meantime, treat as success
-      if (err.message && err.message.includes('Only a single offscreen document may be created')) {
-        resolve();
-      } else {
-        reject(err);
-      }
+      const finishResolve = () => {
+        if (!resolved) {
+          resolved = true;
+          cleanup();
+          logDebug('info', 'オフスクリーンドキュメントの準備が完了しました');
+          resolve();
+        }
+      };
+
+      const timeout = setTimeout(() => {
+        cleanup();
+        logDebug('error', 'Offscreen document ready timeout (15s)');
+        reject(new Error('Offscreen document ready timeout'));
+      }, 15000);
+
+      const readyListener = (msg: Message) => {
+        if (msg.type === MessageType.OFFSCREEN_READY) {
+          finishResolve();
+        }
+      };
+      chrome.runtime.onMessage.addListener(readyListener);
+
+      chrome.offscreen.createDocument({
+        url: 'offscreen.html',
+        reasons: ['AUDIO_PLAYBACK', 'CLIPBOARD'] as chrome.offscreen.Reason[],
+        justification: 'Required for FFmpeg.wasm video processing',
+      }).then(() => {
+        logDebug('info', 'chrome.offscreen.createDocument 呼び出し成功');
+        // ドキュメント生成後、ping を送信して準備完了を確認
+        pingInterval = setInterval(() => {
+          if (resolved) return;
+          chrome.runtime.sendMessage({ type: MessageType.CHECK_OFFSCREEN }).catch(() => {});
+        }, 300);
+      }).catch(err => {
+        if (err.message && err.message.includes('Only a single offscreen document may be created')) {
+          logDebug('info', '既にオフスクリーンが存在しているため解決とみなします');
+          finishResolve();
+        } else {
+          cleanup();
+          logDebug('error', `chrome.offscreen.createDocument エラー: ${err.message}`);
+          reject(err);
+        }
+      });
     });
-  }).finally(() => {
+  })().finally(() => {
     creatingOffscreenPromise = null;
   });
 
-  await creatingOffscreenPromise;
+  return creatingOffscreenPromise;
 }
 
 chrome.debugger.onEvent.addListener(async (source, method, params?: object) => {
@@ -306,6 +386,9 @@ chrome.debugger.onEvent.addListener(async (source, method, params?: object) => {
         videoIdToStreamId.set(stream.videoId, streamId);
       }
       
+      persistStreams();
+      logDebug('info', `ストリームをキャプチャしました: ${stream.tabTitle} (${stream.masterUrl})`);
+
       const initialMessage: Message = {
         type: MessageType.STREAM_CAPTURED,
         payload: stream,
@@ -318,7 +401,8 @@ chrome.debugger.onEvent.addListener(async (source, method, params?: object) => {
           if (duration !== undefined) updatedStream.duration = duration;
           if (variants !== undefined) updatedStream.variants = variants;
           capturedStreams.set(streamId, updatedStream);
-          
+          persistStreams();
+
           chrome.runtime.sendMessage({
             type: MessageType.STREAM_CAPTURED,
             payload: updatedStream,
@@ -447,6 +531,14 @@ chrome.runtime.onMessage.addListener((message: Message, sender, sendResponse) =>
 
     (async () => {
       try {
+        logDebug('info', `ダウンロード開始処理: streamId=${streamId}, file=${outputFilename}, range=${startTime}-${endTime}`);
+        currentDownloadStreamId = streamId;
+        currentDownloadProgress = {
+          stage: 'fetching',
+          progress: 0,
+          message: 'ダウンロードを準備中...',
+        };
+
         await ensureOffscreenDocument();
         const historyEntry = await addHistoryEntry({
           streamId,
@@ -456,6 +548,7 @@ chrome.runtime.onMessage.addListener((message: Message, sender, sendResponse) =>
           fileSize: 0,
         });
 
+        logDebug('info', `オフスクリーンに DOWNLOAD_STREAM を転送します: historyId=${historyEntry.id}`);
         chrome.runtime.sendMessage({
           type: MessageType.DOWNLOAD_STREAM,
           payload: {
@@ -470,20 +563,30 @@ chrome.runtime.onMessage.addListener((message: Message, sender, sendResponse) =>
             variants: stream.variants,
             historyId: historyEntry.id,
           },
+        }).catch((err) => {
+          logDebug('warn', 'オフスクリーンへのメッセージ送信失敗', err);
         });
         sendResponse({ success: true });
       } catch (error) {
+        currentDownloadProgress = null;
+        currentDownloadStreamId = null;
         recordingStates.delete(streamId);
         const errMsg = error instanceof Error ? error.message : 'オフスクリーンドキュメントの初期化に失敗しました';
+        logDebug('error', `ダウンロード準備エラー: ${errMsg}`, error);
         chrome.runtime.sendMessage({
           type: MessageType.DOWNLOAD_ERROR,
           payload: { streamId, error: errMsg },
-        });
+        }).catch(() => {});
         sendResponse({ success: false, error: errMsg });
       }
     })();
     
     return true;
+  }
+
+  if (message.type === MessageType.DOWNLOAD_PROGRESS) {
+    currentDownloadProgress = message.payload as DownloadProgress;
+    return false; // let other listeners receive
   }
   
   if (message.type === MessageType.DOWNLOAD_COMPLETE) {
@@ -493,6 +596,10 @@ chrome.runtime.onMessage.addListener((message: Message, sender, sendResponse) =>
       fileSize?: number;
     };
     
+    logDebug('info', `ダウンロード完了を受信: streamId=${streamId}, fileSize=${fileSize}`);
+    currentDownloadProgress = { stage: 'complete', progress: 100, message: 'ダウンロード完了！' };
+    currentDownloadStreamId = null;
+
     if (historyId) {
       updateHistoryEntry(historyId, { 
         status: 'success', 
@@ -506,7 +613,7 @@ chrome.runtime.onMessage.addListener((message: Message, sender, sendResponse) =>
       chrome.runtime.sendMessage({
         type: MessageType.RECORDING_STATE_CHANGE,
         payload: { streamId, state: 'stopped' },
-      });
+      }).catch(() => {});
     }
     return true;
   }
@@ -518,6 +625,10 @@ chrome.runtime.onMessage.addListener((message: Message, sender, sendResponse) =>
       error?: string;
     };
     
+    logDebug('error', `ダウンロード失敗を受信: streamId=${streamId}, error=${error}`);
+    currentDownloadProgress = null;
+    currentDownloadStreamId = null;
+
     if (historyId) {
       updateHistoryEntry(historyId, { 
         status: 'failed', 
@@ -578,6 +689,8 @@ chrome.runtime.onMessage.addListener((message: Message, sender, sendResponse) =>
     }
     capturedStreams.delete(streamId);
     currentTimes.delete(streamId);
+    persistStreams();
+    logDebug('info', `ストリーム削除: streamId=${streamId}`);
     sendResponse({ success: true });
     return true;
   }
@@ -586,6 +699,8 @@ chrome.runtime.onMessage.addListener((message: Message, sender, sendResponse) =>
     capturedStreams.clear();
     currentTimes.clear();
     videoIdToStreamId.clear();
+    persistStreams();
+    logDebug('info', '全ストリーム削除');
     sendResponse({ success: true });
     return true;
   }
@@ -604,9 +719,42 @@ chrome.runtime.onMessage.addListener((message: Message, sender, sendResponse) =>
     });
     return true;
   }
+
+  if (message.type === MessageType.DEBUG_LOG) {
+    const entry = message.payload as DebugLogEntry;
+    debugLogs.push(entry);
+    if (debugLogs.length > MAX_DEBUG_LOGS) {
+      debugLogs.shift();
+    }
+    return false; // let popup listener also catch if open
+  }
+
+  if (message.type === MessageType.GET_DEBUG_LOGS) {
+    sendResponse({ type: MessageType.DEBUG_LOGS_RESPONSE, payload: debugLogs });
+    return true;
+  }
+
+  if (message.type === MessageType.CLEAR_DEBUG_LOGS) {
+    debugLogs.length = 0;
+    sendResponse({ success: true });
+    return true;
+  }
+
+  if (message.type === MessageType.GET_DOWNLOAD_STATUS) {
+    sendResponse({
+      type: MessageType.DOWNLOAD_STATUS_RESPONSE,
+      payload: {
+        streamId: currentDownloadStreamId,
+        progress: currentDownloadProgress,
+      },
+    });
+    return true;
+  }
   
   return false;
 });
+
+restoreStreams();
 
 async function attachExistingTabs(): Promise<void> {
   try {

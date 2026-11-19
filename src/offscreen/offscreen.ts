@@ -6,8 +6,23 @@ import { buildRequestHeaders } from '../shared/headers';
 let ffmpeg: FFmpeg | null = null;
 let ffmpegLoaded = false;
 
+function logDebug(level: 'info' | 'warn' | 'error', message: string, details?: unknown): void {
+  console[level](`[Offscreen] ${message}`, details !== undefined ? details : '');
+  chrome.runtime.sendMessage({
+    type: MessageType.DEBUG_LOG,
+    payload: {
+      timestamp: Date.now(),
+      source: 'offscreen',
+      level,
+      message,
+      details: details instanceof Error ? details.message : details,
+    },
+  }).catch(() => {});
+}
+
 // Notify background that offscreen document is ready to receive messages
 chrome.runtime.sendMessage({ type: MessageType.OFFSCREEN_READY }).catch(() => {});
+logDebug('info', 'オフスクリーンドキュメント初期化中');
 
 const activeDownloads = new Map<string, AbortController>();
 
@@ -18,24 +33,45 @@ const RETRY_BASE_DELAY = 1000;
 async function initFFmpeg(): Promise<void> {
   if (ffmpegLoaded && ffmpeg) return;
   
-  ffmpeg = new FFmpeg();
-  
-  ffmpeg.on('progress', (progress: { progress: number }) => {
-    reportProgress({
-      stage: 'processing',
-      progress: Math.round(progress.progress * 100),
-      message: `FFmpeg処理中: ${Math.round(progress.progress * 100)}%`,
+  logDebug('info', 'FFmpeg.wasm の初期化開始');
+  reportProgress({
+    stage: 'fetching',
+    progress: 2,
+    message: 'FFmpegエンジンを初期化中...',
+  });
+
+  try {
+    ffmpeg = new FFmpeg();
+    
+    ffmpeg.on('log', ({ message }: { message: string }) => {
+      logDebug('info', `FFmpeg Core: ${message}`);
     });
-  });
-  
-  await ffmpeg.load({
-    coreURL: 'ffmpeg-core/ffmpeg-core.js',
-  });
-  ffmpegLoaded = true;
+
+    ffmpeg.on('progress', (progress: { progress: number }) => {
+      const p = Math.max(0, Math.min(100, Math.round(progress.progress * 100)));
+      reportProgress({
+        stage: 'processing',
+        progress: p,
+        message: `FFmpeg処理中: ${p}%`,
+      });
+    });
+    
+    await ffmpeg.load({
+      coreURL: chrome.runtime.getURL('ffmpeg-core/ffmpeg-core.js'),
+      wasmURL: chrome.runtime.getURL('ffmpeg-core/ffmpeg-core.wasm'),
+    });
+    ffmpegLoaded = true;
+    logDebug('info', 'FFmpeg.wasm のロード完了');
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    logDebug('error', 'FFmpeg初期化に失敗しました', msg);
+    throw new Error(`FFmpeg初期化エラー: ${msg}`, { cause: error });
+  }
 }
 
 function reportProgress(progress: DownloadProgress): void {
-  chrome.runtime.sendMessage({ type: MessageType.DOWNLOAD_PROGRESS, payload: progress });
+  logDebug('info', `Progress [${progress.stage}]: ${progress.progress}% - ${progress.message}`);
+  chrome.runtime.sendMessage({ type: MessageType.DOWNLOAD_PROGRESS, payload: progress }).catch(() => {});
 }
 
 function sleep(ms: number): Promise<void> {
@@ -461,64 +497,77 @@ chrome.runtime.onMessage.addListener(async (message: { type: string; payload?: u
       }
       
       const url = URL.createObjectURL(blob);
-      
-      // Wait for download to complete before revoking the URL
-      const downloadId = await new Promise<number | undefined>((resolve) => {
+      logDebug('info', `Blob 生成完了: ${blob.size} bytes, ダウンロードダイアログ呼び出し中...`);
+
+      // Wait for download to initiate or complete
+      const downloadId = await new Promise<number>((resolve, reject) => {
         chrome.downloads.download({
           url,
           filename: payload.outputFilename,
           saveAs: true,
-        }, (downloadId) => {
+        }, (dId) => {
           if (chrome.runtime.lastError) {
-            console.error('Download error:', chrome.runtime.lastError);
-            resolve(undefined);
+            reject(new Error(`chrome.downloads: ${chrome.runtime.lastError.message}`));
+          } else if (dId === undefined) {
+            reject(new Error('ダウンロードIDの取得に失敗しました'));
           } else {
-            resolve(downloadId);
+            resolve(dId);
           }
         });
       });
-      
-      // Revoke the object URL after download has been initiated
-      URL.revokeObjectURL(url);
-      
-      if (downloadId) {
-        // Wait for download to complete by listening to onChanged
-        await new Promise<void>((resolve) => {
-          const listener = (delta: chrome.downloads.DownloadDelta) => {
-            if (delta.id === downloadId && delta.state && delta.state.current === 'complete') {
+
+      logDebug('info', `ダウンロード開始 (ID: ${downloadId})`);
+
+      // Wait for download to finish by listening to onChanged
+      await new Promise<void>((resolve, reject) => {
+        const listener = (delta: chrome.downloads.DownloadDelta) => {
+          if (delta.id === downloadId) {
+            if (delta.state && delta.state.current === 'complete') {
               chrome.downloads.onChanged.removeListener(listener);
+              URL.revokeObjectURL(url);
               resolve();
-            } else if (delta.id === downloadId && delta.state && delta.state.current === 'interrupted') {
+            } else if (delta.state && delta.state.current === 'interrupted') {
               chrome.downloads.onChanged.removeListener(listener);
-              resolve();
+              URL.revokeObjectURL(url);
+              reject(new Error(`ダウンロード中断: ${delta.error?.current || '不明なエラー'}`));
             }
-          };
-          chrome.downloads.onChanged.addListener(listener);
-        });
-      }
-      
-      chrome.runtime.sendMessage({ type: MessageType.DOWNLOAD_COMPLETE, payload: { streamId: payload.streamId, historyId: payload.historyId, fileSize: blob.size } });
+          }
+        };
+        chrome.downloads.onChanged.addListener(listener);
+      });
+
+      logDebug('info', 'ダウンロード正常完了');
+      chrome.runtime.sendMessage({
+        type: MessageType.DOWNLOAD_COMPLETE,
+        payload: { streamId: payload.streamId, historyId: payload.historyId, fileSize: blob.size }
+      }).catch(() => {});
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : '不明なエラー';
+      logDebug('error', `ダウンロード処理エラー: ${errorMessage}`, error);
       reportProgress({ stage: 'error', progress: 0, message: 'ダウンロードに失敗しました', error: errorMessage });
-      chrome.runtime.sendMessage({ type: MessageType.DOWNLOAD_ERROR, payload: { streamId: payload.streamId, historyId: payload.historyId, error: errorMessage } });
+      chrome.runtime.sendMessage({
+        type: MessageType.DOWNLOAD_ERROR,
+        payload: { streamId: payload.streamId, historyId: payload.historyId, error: errorMessage }
+      }).catch(() => {});
     } finally {
       activeDownloads.delete(payload.streamId);
     }
   }
-  
+
   if (message.type === MessageType.STOP_DOWNLOAD) {
     const { streamId } = message.payload as { streamId: string };
     const controller = activeDownloads.get(streamId);
     if (controller) {
       controller.abort();
       activeDownloads.delete(streamId);
+      logDebug('info', `ダウンロード停止: streamId=${streamId}`);
     }
   }
 
   if (message.type === MessageType.CHECK_OFFSCREEN) {
+    logDebug('info', 'CHECK_OFFSCREEN 受信、OFFSCREEN_READY を応答');
     chrome.runtime.sendMessage({ type: MessageType.OFFSCREEN_READY }).catch(() => {});
   }
 });
 
-console.log('オフスクリーンドキュメントが読み込まれました');
+logDebug('info', 'オフスクリーンドキュメントの初期化完了');

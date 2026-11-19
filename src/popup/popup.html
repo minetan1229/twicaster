@@ -79,7 +79,21 @@
     <footer>
       <span>バージョン <span id="version"></span></span>
       <span id="storage-info"></span>
+      <label class="debug-toggle-label">
+        <input type="checkbox" id="debug-mode-toggle"> Debug
+      </label>
     </footer>
+
+    <div id="debug-section" class="debug-section hidden">
+      <div class="debug-header">
+        <span>デバッグログ</span>
+        <div>
+          <button id="copy-debug-logs-btn" class="btn-xs">コピー</button>
+          <button id="clear-debug-logs-btn" class="btn-xs">クリア</button>
+        </div>
+      </div>
+      <div id="debug-logs" class="debug-logs"></div>
+    </div>
   </div>
   <script type="module" src="popup.js"></script>
 </body>
