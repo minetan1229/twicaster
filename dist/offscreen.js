@@ -527,6 +527,7 @@ function buildRequestHeaders(stream, url) {
 // src/offscreen/offscreen.ts
 var ffmpeg = null;
 var ffmpegLoaded = false;
+var ffmpegLoadingPromise = null;
 function logDebug(level, message, details) {
   console[level](`[Offscreen] ${message}`, details !== void 0 ? details : "");
   chrome.runtime.sendMessage({
@@ -548,39 +549,54 @@ var activeDownloads = /* @__PURE__ */ new Map();
 var MAX_PARALLEL_DOWNLOADS = 3;
 var MAX_RETRIES = 3;
 var RETRY_BASE_DELAY = 1e3;
-async function initFFmpeg() {
+async function initFFmpeg(isPreload = false) {
   if (ffmpegLoaded && ffmpeg) return;
-  logDebug("info", "FFmpeg.wasm \u306E\u521D\u671F\u5316\u958B\u59CB");
-  reportProgress({
-    stage: "fetching",
-    progress: 2,
-    message: "FFmpeg\u30A8\u30F3\u30B8\u30F3\u3092\u521D\u671F\u5316\u4E2D..."
-  });
-  try {
-    ffmpeg = new FFmpeg();
-    ffmpeg.on("log", ({ message }) => {
-      logDebug("info", `FFmpeg Core: ${message}`);
-    });
-    ffmpeg.on("progress", (progress) => {
-      const p = Math.max(0, Math.min(100, Math.round(progress.progress * 100)));
-      reportProgress({
-        stage: "processing",
-        progress: p,
-        message: `FFmpeg\u51E6\u7406\u4E2D: ${p}%`
-      });
-    });
-    await ffmpeg.load({
-      coreURL: chrome.runtime.getURL("ffmpeg-core/ffmpeg-core.js"),
-      wasmURL: chrome.runtime.getURL("ffmpeg-core/ffmpeg-core.wasm")
-    });
-    ffmpegLoaded = true;
-    logDebug("info", "FFmpeg.wasm \u306E\u30ED\u30FC\u30C9\u5B8C\u4E86");
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    logDebug("error", "FFmpeg\u521D\u671F\u5316\u306B\u5931\u6557\u3057\u307E\u3057\u305F", msg);
-    throw new Error(`FFmpeg\u521D\u671F\u5316\u30A8\u30E9\u30FC: ${msg}`, { cause: error });
+  if (ffmpegLoadingPromise) {
+    return ffmpegLoadingPromise;
   }
+  ffmpegLoadingPromise = (async () => {
+    logDebug("info", `FFmpeg.wasm \u306E\u521D\u671F\u5316\u958B\u59CB (preload=${isPreload})`);
+    if (!isPreload) {
+      reportProgress({
+        stage: "fetching",
+        progress: 2,
+        message: "FFmpeg\u30A8\u30F3\u30B8\u30F3\u3092\u521D\u671F\u5316\u4E2D..."
+      });
+    }
+    try {
+      ffmpeg = new FFmpeg();
+      ffmpeg.on("log", ({ message }) => {
+        logDebug("info", `FFmpeg Core: ${message}`);
+      });
+      ffmpeg.on("progress", (progress) => {
+        const p = Math.max(0, Math.min(100, Math.round(progress.progress * 100)));
+        reportProgress({
+          stage: "processing",
+          progress: p,
+          message: `FFmpeg\u51E6\u7406\u4E2D: ${p}%`
+        });
+      });
+      await ffmpeg.load({
+        coreURL: chrome.runtime.getURL("ffmpeg-core/ffmpeg-core.js"),
+        wasmURL: chrome.runtime.getURL("ffmpeg-core/ffmpeg-core.wasm")
+      });
+      ffmpegLoaded = true;
+      logDebug("info", "FFmpeg.wasm \u306E\u30ED\u30FC\u30C9\u5B8C\u4E86");
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      logDebug("error", "FFmpeg\u521D\u671F\u5316\u306B\u5931\u6557\u3057\u307E\u3057\u305F", msg);
+      throw new Error(`FFmpeg\u521D\u671F\u5316\u30A8\u30E9\u30FC: ${msg}`, { cause: error });
+    } finally {
+      if (!ffmpegLoaded) {
+        ffmpegLoadingPromise = null;
+      }
+    }
+  })();
+  return ffmpegLoadingPromise;
 }
+initFFmpeg(true).catch((err) => {
+  logDebug("warn", "FFmpeg\u30D0\u30C3\u30AF\u30B0\u30E9\u30A6\u30F3\u30C9\u5148\u884C\u30ED\u30FC\u30C9\u5F85\u6A5F\u4E2D\u307E\u305F\u306F\u30A8\u30E9\u30FC", err);
+});
 function reportProgress(progress) {
   logDebug("info", `Progress [${progress.stage}]: ${progress.progress}% - ${progress.message}`);
   chrome.runtime.sendMessage({ type: MessageType.DOWNLOAD_PROGRESS, payload: progress }).catch(() => {

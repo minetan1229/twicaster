@@ -543,6 +543,9 @@ chrome.debugger.onEvent.addListener(async (source, method, params) => {
       }
       persistStreams();
       logDebug("info", `\u30B9\u30C8\u30EA\u30FC\u30E0\u3092\u30AD\u30E3\u30D7\u30C1\u30E3\u3057\u307E\u3057\u305F: ${stream.tabTitle} (${stream.masterUrl})`);
+      ensureOffscreenDocument().catch((err) => {
+        logDebug("warn", "\u30AA\u30D5\u30B9\u30AF\u30EA\u30FC\u30F3\u5148\u884C\u8D77\u52D5\u30A8\u30E9\u30FC", err);
+      });
       const initialMessage = {
         type: MessageType.STREAM_CAPTURED,
         payload: stream
@@ -572,6 +575,8 @@ chrome.debugger.onEvent.addListener(async (source, method, params) => {
 });
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === MessageType.GET_STREAMS) {
+    ensureOffscreenDocument().catch(() => {
+    });
     const streams = Array.from(capturedStreams.values());
     sendResponse({ type: MessageType.STREAMS_LIST, payload: streams });
     return true;

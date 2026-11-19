@@ -389,6 +389,11 @@ chrome.debugger.onEvent.addListener(async (source, method, params?: object) => {
       persistStreams();
       logDebug('info', `ストリームをキャプチャしました: ${stream.tabTitle} (${stream.masterUrl})`);
 
+      // ストリーム検出時にオフスクリーン (FFmpeg) を先行ウォームアップ
+      ensureOffscreenDocument().catch(err => {
+        logDebug('warn', 'オフスクリーン先行起動エラー', err);
+      });
+
       const initialMessage: Message = {
         type: MessageType.STREAM_CAPTURED,
         payload: stream,
@@ -420,6 +425,8 @@ chrome.debugger.onEvent.addListener(async (source, method, params?: object) => {
 
 chrome.runtime.onMessage.addListener((message: Message, sender, sendResponse) => {
   if (message.type === MessageType.GET_STREAMS) {
+    // ポップアップ起動時にもオフスクリーンをバックグラウンドで先行起動
+    ensureOffscreenDocument().catch(() => {});
     const streams = Array.from(capturedStreams.values());
     sendResponse({ type: MessageType.STREAMS_LIST, payload: streams });
     return true;
