@@ -4,22 +4,18 @@ import { parseTimeInput, formatTime, validateTimeRange } from '../shared/time';
 let currentStream: CapturedStream | null = null;
 let streams: CapturedStream[] = [];
 let history: DownloadHistoryItem[] = [];
-let activeTab: 'vod' | 'live' | 'recording' | 'history' = 'vod';
+let activeTab: 'streams' | 'history' = 'streams';
 let confirmCallback: (() => void) | null = null;
 
 const elements = {
   tabs: document.querySelectorAll('.tab') as NodeListOf<HTMLButtonElement>,
   tabPanels: document.querySelectorAll('.tab-panel') as NodeListOf<HTMLDivElement>,
   streamLists: {
-    vod: document.getElementById('streams')!,
-    live: document.getElementById('live-streams')!,
-    recording: document.getElementById('recording-streams')!,
+    streams: document.getElementById('streams')!,
     history: document.getElementById('history-streams')!,
   },
   emptyStates: {
-    vod: document.getElementById('empty-state')!,
-    live: document.getElementById('live-empty')!,
-    recording: document.getElementById('recording-empty')!,
+    streams: document.getElementById('empty-state')!,
     history: document.getElementById('history-empty')!,
   },
   streamDetail: document.getElementById('stream-detail')!,
@@ -57,17 +53,9 @@ const elements = {
   storageInfo: document.getElementById('storage-info')!,
 };
 
-function getFilteredStreams(type: 'vod' | 'live' | 'recording' | 'history'): CapturedStream[] {
-  return streams.filter(s => {
-    if (type === 'vod') return s.type === 'vod';
-    if (type === 'live') return s.type === 'live';
-    if (type === 'recording') return s.type === 'live';
-    return true;
-  });
-}
-
-function showTab(tab: 'vod' | 'live' | 'recording' | 'history'): void {
+function showTab(tab: 'streams' | 'history'): void {
   activeTab = tab;
+  currentStream = null;
   
   elements.tabs.forEach(t => {
     const isActive = t.dataset.tab === tab;
@@ -75,34 +63,30 @@ function showTab(tab: 'vod' | 'live' | 'recording' | 'history'): void {
     t.setAttribute('aria-selected', isActive ? 'true' : 'false');
   });
   
-  elements.tabPanels.forEach(p => {
-    const isActive = p.dataset.tab === tab;
-    p.classList.toggle('active', isActive);
-    p.classList.toggle('hidden', !isActive);
-  });
-  
-  renderStreamList();
-  
-  if (currentStream) {
-    showStreamList();
-  }
+  showStreamList();
 }
 
 function showStreamList(): void {
   elements.streamDetail.classList.add('hidden');
-  elements.tabPanels.forEach(p => p.classList.remove('hidden'));
+  
+  elements.tabPanels.forEach(p => {
+    const isActive = p.dataset.tab === activeTab;
+    p.classList.toggle('active', isActive);
+    p.classList.toggle('hidden', !isActive);
+  });
   
   const emptyState = elements.emptyStates[activeTab];
   const streamList = elements.streamLists[activeTab];
   
-  const filtered = getFilteredStreams(activeTab);
+  renderStreamList();
   
-  if (filtered.length === 0) {
+  const hasItems = activeTab === 'streams' ? streams.length > 0 : history.length > 0;
+  if (!hasItems) {
     emptyState.classList.remove('hidden');
-    streamList.parentElement!.classList.add('hidden');
+    streamList.classList.add('hidden');
   } else {
     emptyState.classList.add('hidden');
-    streamList.parentElement!.classList.remove('hidden');
+    streamList.classList.remove('hidden');
   }
 }
 
@@ -378,9 +362,7 @@ function showError(message: string): void {
 }
 
 function renderStreamList(): void {
-  const filtered = getFilteredStreams(activeTab);
   const streamList = elements.streamLists[activeTab];
-  
   streamList.innerHTML = '';
   
   if (activeTab === 'history') {
@@ -419,27 +401,27 @@ function renderStreamList(): void {
     return;
   }
   
-  for (const stream of filtered) {
+  // 検出されたストリーム一覧（新しいものが上）
+  for (const stream of streams) {
     const item = document.createElement('div');
     item.className = 'stream-item';
     item.dataset.id = stream.id;
     
     const time = new Date(stream.timestamp).toLocaleTimeString();
-    let liveBadge = '';
-    if (stream.type === 'live') {
-      liveBadge = '<span class="live-badge">LIVE</span>';
-    }
+    const typeBadge = stream.type === 'live' 
+      ? '<span class="live-badge">LIVE</span>' 
+      : '<span class="vod-badge">VOD</span>';
     
     item.innerHTML = `
       <div class="stream-item-header">
-        <div class="stream-item-title">${escapeHtml(stream.tabTitle)} ${liveBadge}</div>
+        <div class="stream-item-title">${escapeHtml(stream.tabTitle)} ${typeBadge}</div>
         <button class="btn-delete" data-id="${stream.id}" title="削除" aria-label="削除">&times;</button>
       </div>
       <div class="stream-item-meta">${time} · ${stream.videoId || 'Unknown ID'}</div>
     `;
     
     item.addEventListener('click', (e) => {
-      if ((e.target as HTMLElement).classList.contains('btn-delete')) return;
+      if ((e.target as HTMLElement).closest('.btn-delete')) return;
       showStreamDetail(stream);
     });
     
@@ -676,7 +658,7 @@ elements.downloadAllBtn.addEventListener('click', async () => {
 
 elements.tabs.forEach(tab => {
   tab.addEventListener('click', () => {
-    showTab(tab.dataset.tab as 'vod' | 'live' | 'recording' | 'history');
+    showTab(tab.dataset.tab as 'streams' | 'history');
   });
 });
 
@@ -714,9 +696,12 @@ chrome.runtime.onMessage.addListener((message: Message) => {
     } else {
       streams.unshift(stream);
     }
-    renderStreamList();
-    elements.emptyStates[activeTab].classList.add('hidden');
-    elements.streamLists[activeTab].parentElement!.classList.remove('hidden');
+    
+    if (activeTab === 'streams') {
+      renderStreamList();
+      elements.emptyStates.streams.classList.add('hidden');
+      elements.streamLists.streams.classList.remove('hidden');
+    }
     
     // Update detail view if this stream is currently being viewed
     if (currentStream?.id === stream.id) {

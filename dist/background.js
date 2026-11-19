@@ -668,6 +668,20 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
   return false;
 });
+async function attachExistingTabs() {
+  try {
+    const tabs = await chrome.tabs.query({ url: "*://*.twitcasting.tv/*" });
+    for (const tab of tabs) {
+      if (tab.id !== void 0) {
+        attachDebugger(tab.id).catch((err) => {
+          console.warn(`Could not attach debugger to tab ${tab.id}:`, err);
+        });
+      }
+    }
+  } catch (error) {
+    console.error("Failed to query existing tabs:", error);
+  }
+}
 chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
   if (changeInfo.status === "complete" && tab.url?.includes("twitcasting.tv")) {
     try {
@@ -682,6 +696,8 @@ chrome.tabs.onRemoved.addListener((tabId) => {
 });
 chrome.runtime.onInstalled.addListener(() => {
   console.log("Twicaster extension installed");
+  attachExistingTabs();
 });
+attachExistingTabs();
 console.log("Background service worker started");
 //# sourceMappingURL=background.js.map

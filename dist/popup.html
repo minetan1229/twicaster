@@ -14,33 +14,17 @@
     </header>
 
     <div class="tabs">
-      <button class="tab active" data-tab="vod" role="tab" aria-selected="true">VOD</button>
-      <button class="tab" data-tab="live" role="tab" aria-selected="false">ライブ</button>
-      <button class="tab" data-tab="recording" role="tab" aria-selected="false">録画中</button>
+      <button class="tab active" data-tab="streams" role="tab" aria-selected="true">検出ストリーム</button>
       <button class="tab" data-tab="history" role="tab" aria-selected="false">履歴</button>
     </div>
 
     <div class="tab-panels">
-      <div class="tab-panel active" data-tab="vod" role="tabpanel">
+      <div class="tab-panel active" data-tab="streams" role="tabpanel">
         <div id="empty-state" class="hidden">
-          <p>ストリームが捕獲されていません。</p>
-          <p>TwitCastingのVOD/ライブページを開くと自動的に検出されます。</p>
+          <p>ストリームが検出されていません。</p>
+          <p>TwitCastingのページを開くと自動的に検出され、最新のものが上に追加されます。</p>
         </div>
         <div id="streams"></div>
-      </div>
-
-      <div class="tab-panel hidden" data-tab="live" role="tabpanel">
-        <div id="live-empty" class="hidden">
-          <p>ライブ配信が検出されていません。</p>
-        </div>
-        <div id="live-streams"></div>
-      </div>
-
-      <div class="tab-panel hidden" data-tab="recording" role="tabpanel">
-        <div id="recording-empty" class="hidden">
-          <p>録画中の配信はありません。</p>
-        </div>
-        <div id="recording-streams"></div>
       </div>
 
       <div class="tab-panel hidden" data-tab="history" role="tabpanel">

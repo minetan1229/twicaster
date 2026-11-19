@@ -78,21 +78,17 @@ function validateTimeRange(start, end, duration) {
 var currentStream = null;
 var streams = [];
 var history = [];
-var activeTab = "vod";
+var activeTab = "streams";
 var confirmCallback = null;
 var elements = {
   tabs: document.querySelectorAll(".tab"),
   tabPanels: document.querySelectorAll(".tab-panel"),
   streamLists: {
-    vod: document.getElementById("streams"),
-    live: document.getElementById("live-streams"),
-    recording: document.getElementById("recording-streams"),
+    streams: document.getElementById("streams"),
     history: document.getElementById("history-streams")
   },
   emptyStates: {
-    vod: document.getElementById("empty-state"),
-    live: document.getElementById("live-empty"),
-    recording: document.getElementById("recording-empty"),
+    streams: document.getElementById("empty-state"),
     history: document.getElementById("history-empty")
   },
   streamDetail: document.getElementById("stream-detail"),
@@ -129,43 +125,33 @@ var elements = {
   modalVersion: document.getElementById("modal-version"),
   storageInfo: document.getElementById("storage-info")
 };
-function getFilteredStreams(type) {
-  return streams.filter((s) => {
-    if (type === "vod") return s.type === "vod";
-    if (type === "live") return s.type === "live";
-    if (type === "recording") return s.type === "live";
-    return true;
-  });
-}
 function showTab(tab) {
   activeTab = tab;
+  currentStream = null;
   elements.tabs.forEach((t) => {
     const isActive = t.dataset.tab === tab;
     t.classList.toggle("active", isActive);
     t.setAttribute("aria-selected", isActive ? "true" : "false");
   });
-  elements.tabPanels.forEach((p) => {
-    const isActive = p.dataset.tab === tab;
-    p.classList.toggle("active", isActive);
-    p.classList.toggle("hidden", !isActive);
-  });
-  renderStreamList();
-  if (currentStream) {
-    showStreamList();
-  }
+  showStreamList();
 }
 function showStreamList() {
   elements.streamDetail.classList.add("hidden");
-  elements.tabPanels.forEach((p) => p.classList.remove("hidden"));
+  elements.tabPanels.forEach((p) => {
+    const isActive = p.dataset.tab === activeTab;
+    p.classList.toggle("active", isActive);
+    p.classList.toggle("hidden", !isActive);
+  });
   const emptyState = elements.emptyStates[activeTab];
   const streamList = elements.streamLists[activeTab];
-  const filtered = getFilteredStreams(activeTab);
-  if (filtered.length === 0) {
+  renderStreamList();
+  const hasItems = activeTab === "streams" ? streams.length > 0 : history.length > 0;
+  if (!hasItems) {
     emptyState.classList.remove("hidden");
-    streamList.parentElement.classList.add("hidden");
+    streamList.classList.add("hidden");
   } else {
     emptyState.classList.add("hidden");
-    streamList.parentElement.classList.remove("hidden");
+    streamList.classList.remove("hidden");
   }
 }
 function showStreamDetail(stream) {
@@ -395,7 +381,6 @@ function showError(message) {
   elements.downloadAllBtn.disabled = false;
 }
 function renderStreamList() {
-  const filtered = getFilteredStreams(activeTab);
   const streamList = elements.streamLists[activeTab];
   streamList.innerHTML = "";
   if (activeTab === "history") {
@@ -428,24 +413,21 @@ function renderStreamList() {
     }
     return;
   }
-  for (const stream of filtered) {
+  for (const stream of streams) {
     const item = document.createElement("div");
     item.className = "stream-item";
     item.dataset.id = stream.id;
     const time = new Date(stream.timestamp).toLocaleTimeString();
-    let liveBadge = "";
-    if (stream.type === "live") {
-      liveBadge = '<span class="live-badge">LIVE</span>';
-    }
+    const typeBadge = stream.type === "live" ? '<span class="live-badge">LIVE</span>' : '<span class="vod-badge">VOD</span>';
     item.innerHTML = `
       <div class="stream-item-header">
-        <div class="stream-item-title">${escapeHtml(stream.tabTitle)} ${liveBadge}</div>
+        <div class="stream-item-title">${escapeHtml(stream.tabTitle)} ${typeBadge}</div>
         <button class="btn-delete" data-id="${stream.id}" title="\u524A\u9664" aria-label="\u524A\u9664">&times;</button>
       </div>
       <div class="stream-item-meta">${time} \xB7 ${stream.videoId || "Unknown ID"}</div>
     `;
     item.addEventListener("click", (e) => {
-      if (e.target.classList.contains("btn-delete")) return;
+      if (e.target.closest(".btn-delete")) return;
       showStreamDetail(stream);
     });
     item.querySelector(".btn-delete").addEventListener("click", (e) => {
@@ -675,9 +657,11 @@ chrome.runtime.onMessage.addListener((message) => {
     } else {
       streams.unshift(stream);
     }
-    renderStreamList();
-    elements.emptyStates[activeTab].classList.add("hidden");
-    elements.streamLists[activeTab].parentElement.classList.remove("hidden");
+    if (activeTab === "streams") {
+      renderStreamList();
+      elements.emptyStates.streams.classList.add("hidden");
+      elements.streamLists.streams.classList.remove("hidden");
+    }
     if (currentStream?.id === stream.id) {
       showStreamDetail(stream);
     }
