@@ -20,7 +20,13 @@ var MessageType = {
   HISTORY_LIST: "HISTORY_LIST",
   DELETE_HISTORY: "DELETE_HISTORY",
   OFFSCREEN_READY: "OFFSCREEN_READY",
-  CHECK_OFFSCREEN: "CHECK_OFFSCREEN"
+  CHECK_OFFSCREEN: "CHECK_OFFSCREEN",
+  DEBUG_LOG: "DEBUG_LOG",
+  GET_DEBUG_LOGS: "GET_DEBUG_LOGS",
+  DEBUG_LOGS_RESPONSE: "DEBUG_LOGS_RESPONSE",
+  CLEAR_DEBUG_LOGS: "CLEAR_DEBUG_LOGS",
+  GET_DOWNLOAD_STATUS: "GET_DOWNLOAD_STATUS",
+  DOWNLOAD_STATUS_RESPONSE: "DOWNLOAD_STATUS_RESPONSE"
 };
 
 // src/shared/headers.ts
@@ -205,8 +211,59 @@ var debuggerTabs = /* @__PURE__ */ new Set();
 var currentTimes = /* @__PURE__ */ new Map();
 var recordingStates = /* @__PURE__ */ new Map();
 var videoIdToStreamId = /* @__PURE__ */ new Map();
+var debugLogs = [];
+var currentDownloadProgress = null;
+var currentDownloadStreamId = null;
 var MAX_HISTORY_ENTRIES = 100;
 var HISTORY_STORAGE_KEY = "downloadHistory";
+var STREAMS_STORAGE_KEY = "savedStreams";
+var MAX_DEBUG_LOGS = 200;
+function logDebug(level, message, details) {
+  const entry = {
+    timestamp: Date.now(),
+    source: "background",
+    level,
+    message,
+    details: details instanceof Error ? details.message : details
+  };
+  debugLogs.push(entry);
+  if (debugLogs.length > MAX_DEBUG_LOGS) {
+    debugLogs.shift();
+  }
+  console[level](`[Background] ${message}`, details !== void 0 ? details : "");
+  chrome.runtime.sendMessage({
+    type: MessageType.DEBUG_LOG,
+    payload: entry
+  }).catch(() => {
+  });
+}
+async function persistStreams() {
+  try {
+    const list = Array.from(capturedStreams.values());
+    await chrome.storage.local.set({ [STREAMS_STORAGE_KEY]: list });
+  } catch (e) {
+    logDebug("warn", "Failed to persist streams to storage", e);
+  }
+}
+async function restoreStreams() {
+  try {
+    const result = await chrome.storage.local.get(STREAMS_STORAGE_KEY);
+    const saved = result[STREAMS_STORAGE_KEY];
+    if (saved && Array.isArray(saved)) {
+      for (const s of saved) {
+        if (!capturedStreams.has(s.id)) {
+          capturedStreams.set(s.id, s);
+          if (s.videoId) {
+            videoIdToStreamId.set(s.videoId, s.id);
+          }
+        }
+      }
+      logDebug("info", `\u30B9\u30C8\u30EC\u30FC\u30B8\u304B\u3089 ${saved.length} \u4EF6\u306E\u30B9\u30C8\u30EA\u30FC\u30E0\u3092\u5FA9\u5143\u3057\u307E\u3057\u305F`);
+    }
+  } catch (e) {
+    logDebug("warn", "Failed to restore streams from storage", e);
+  }
+}
 function generateStreamId() {
   return `stream_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
 }
@@ -386,42 +443,67 @@ async function ensureOffscreenDocument() {
     contextTypes: [chrome.runtime.ContextType.OFFSCREEN_DOCUMENT]
   });
   if (existingContexts.length > 0) {
+    logDebug("info", "\u65E2\u5B58\u306E\u30AA\u30D5\u30B9\u30AF\u30EA\u30FC\u30F3\u30C9\u30AD\u30E5\u30E1\u30F3\u30C8\u304C\u691C\u51FA\u3055\u308C\u307E\u3057\u305F");
     return;
   }
   if (creatingOffscreenPromise) {
-    await creatingOffscreenPromise;
-    return;
+    return creatingOffscreenPromise;
   }
-  creatingOffscreenPromise = new Promise((resolve, reject) => {
-    const timeout = setTimeout(() => {
-      chrome.runtime.onMessage.removeListener(readyListener);
-      reject(new Error("Offscreen document ready timeout"));
-    }, 15e3);
-    const readyListener = (msg) => {
-      if (msg.type === MessageType.OFFSCREEN_READY) {
+  creatingOffscreenPromise = (async () => {
+    logDebug("info", "\u30AA\u30D5\u30B9\u30AF\u30EA\u30FC\u30F3\u30C9\u30AD\u30E5\u30E1\u30F3\u30C8\u306E\u751F\u6210\u958B\u59CB");
+    return new Promise((resolve, reject) => {
+      let resolved = false;
+      let pingInterval = null;
+      const cleanup = () => {
+        if (pingInterval) clearInterval(pingInterval);
         clearTimeout(timeout);
         chrome.runtime.onMessage.removeListener(readyListener);
-        resolve();
-      }
-    };
-    chrome.runtime.onMessage.addListener(readyListener);
-    chrome.offscreen.createDocument({
-      url: "offscreen.html",
-      reasons: ["AUDIO_PLAYBACK", "CLIPBOARD"],
-      justification: "Required for FFmpeg.wasm video processing"
-    }).catch((err) => {
-      clearTimeout(timeout);
-      chrome.runtime.onMessage.removeListener(readyListener);
-      if (err.message && err.message.includes("Only a single offscreen document may be created")) {
-        resolve();
-      } else {
-        reject(err);
-      }
+      };
+      const finishResolve = () => {
+        if (!resolved) {
+          resolved = true;
+          cleanup();
+          logDebug("info", "\u30AA\u30D5\u30B9\u30AF\u30EA\u30FC\u30F3\u30C9\u30AD\u30E5\u30E1\u30F3\u30C8\u306E\u6E96\u5099\u304C\u5B8C\u4E86\u3057\u307E\u3057\u305F");
+          resolve();
+        }
+      };
+      const timeout = setTimeout(() => {
+        cleanup();
+        logDebug("error", "Offscreen document ready timeout (15s)");
+        reject(new Error("Offscreen document ready timeout"));
+      }, 15e3);
+      const readyListener = (msg) => {
+        if (msg.type === MessageType.OFFSCREEN_READY) {
+          finishResolve();
+        }
+      };
+      chrome.runtime.onMessage.addListener(readyListener);
+      chrome.offscreen.createDocument({
+        url: "offscreen.html",
+        reasons: ["AUDIO_PLAYBACK", "CLIPBOARD"],
+        justification: "Required for FFmpeg.wasm video processing"
+      }).then(() => {
+        logDebug("info", "chrome.offscreen.createDocument \u547C\u3073\u51FA\u3057\u6210\u529F");
+        pingInterval = setInterval(() => {
+          if (resolved) return;
+          chrome.runtime.sendMessage({ type: MessageType.CHECK_OFFSCREEN }).catch(() => {
+          });
+        }, 300);
+      }).catch((err) => {
+        if (err.message && err.message.includes("Only a single offscreen document may be created")) {
+          logDebug("info", "\u65E2\u306B\u30AA\u30D5\u30B9\u30AF\u30EA\u30FC\u30F3\u304C\u5B58\u5728\u3057\u3066\u3044\u308B\u305F\u3081\u89E3\u6C7A\u3068\u307F\u306A\u3057\u307E\u3059");
+          finishResolve();
+        } else {
+          cleanup();
+          logDebug("error", `chrome.offscreen.createDocument \u30A8\u30E9\u30FC: ${err.message}`);
+          reject(err);
+        }
+      });
     });
-  }).finally(() => {
+  })().finally(() => {
     creatingOffscreenPromise = null;
   });
-  await creatingOffscreenPromise;
+  return creatingOffscreenPromise;
 }
 chrome.debugger.onEvent.addListener(async (source, method, params) => {
   const tabId = source.tabId;
@@ -459,6 +541,8 @@ chrome.debugger.onEvent.addListener(async (source, method, params) => {
       if (stream.videoId) {
         videoIdToStreamId.set(stream.videoId, streamId);
       }
+      persistStreams();
+      logDebug("info", `\u30B9\u30C8\u30EA\u30FC\u30E0\u3092\u30AD\u30E3\u30D7\u30C1\u30E3\u3057\u307E\u3057\u305F: ${stream.tabTitle} (${stream.masterUrl})`);
       const initialMessage = {
         type: MessageType.STREAM_CAPTURED,
         payload: stream
@@ -471,6 +555,7 @@ chrome.debugger.onEvent.addListener(async (source, method, params) => {
           if (duration !== void 0) updatedStream.duration = duration;
           if (variants !== void 0) updatedStream.variants = variants;
           capturedStreams.set(streamId, updatedStream);
+          persistStreams();
           chrome.runtime.sendMessage({
             type: MessageType.STREAM_CAPTURED,
             payload: updatedStream
@@ -576,6 +661,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     }
     (async () => {
       try {
+        logDebug("info", `\u30C0\u30A6\u30F3\u30ED\u30FC\u30C9\u958B\u59CB\u51E6\u7406: streamId=${streamId}, file=${outputFilename}, range=${startTime}-${endTime}`);
+        currentDownloadStreamId = streamId;
+        currentDownloadProgress = {
+          stage: "fetching",
+          progress: 0,
+          message: "\u30C0\u30A6\u30F3\u30ED\u30FC\u30C9\u3092\u6E96\u5099\u4E2D..."
+        };
         await ensureOffscreenDocument();
         const historyEntry = await addHistoryEntry({
           streamId,
@@ -584,6 +676,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           endTime,
           fileSize: 0
         });
+        logDebug("info", `\u30AA\u30D5\u30B9\u30AF\u30EA\u30FC\u30F3\u306B DOWNLOAD_STREAM \u3092\u8EE2\u9001\u3057\u307E\u3059: historyId=${historyEntry.id}`);
         chrome.runtime.sendMessage({
           type: MessageType.DOWNLOAD_STREAM,
           payload: {
@@ -598,22 +691,35 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             variants: stream.variants,
             historyId: historyEntry.id
           }
+        }).catch((err) => {
+          logDebug("warn", "\u30AA\u30D5\u30B9\u30AF\u30EA\u30FC\u30F3\u3078\u306E\u30E1\u30C3\u30BB\u30FC\u30B8\u9001\u4FE1\u5931\u6557", err);
         });
         sendResponse({ success: true });
       } catch (error) {
+        currentDownloadProgress = null;
+        currentDownloadStreamId = null;
         recordingStates.delete(streamId);
         const errMsg = error instanceof Error ? error.message : "\u30AA\u30D5\u30B9\u30AF\u30EA\u30FC\u30F3\u30C9\u30AD\u30E5\u30E1\u30F3\u30C8\u306E\u521D\u671F\u5316\u306B\u5931\u6557\u3057\u307E\u3057\u305F";
+        logDebug("error", `\u30C0\u30A6\u30F3\u30ED\u30FC\u30C9\u6E96\u5099\u30A8\u30E9\u30FC: ${errMsg}`, error);
         chrome.runtime.sendMessage({
           type: MessageType.DOWNLOAD_ERROR,
           payload: { streamId, error: errMsg }
+        }).catch(() => {
         });
         sendResponse({ success: false, error: errMsg });
       }
     })();
     return true;
   }
+  if (message.type === MessageType.DOWNLOAD_PROGRESS) {
+    currentDownloadProgress = message.payload;
+    return false;
+  }
   if (message.type === MessageType.DOWNLOAD_COMPLETE) {
     const { streamId, historyId, fileSize } = message.payload;
+    logDebug("info", `\u30C0\u30A6\u30F3\u30ED\u30FC\u30C9\u5B8C\u4E86\u3092\u53D7\u4FE1: streamId=${streamId}, fileSize=${fileSize}`);
+    currentDownloadProgress = { stage: "complete", progress: 100, message: "\u30C0\u30A6\u30F3\u30ED\u30FC\u30C9\u5B8C\u4E86\uFF01" };
+    currentDownloadStreamId = null;
     if (historyId) {
       updateHistoryEntry(historyId, {
         status: "success",
@@ -626,12 +732,16 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       chrome.runtime.sendMessage({
         type: MessageType.RECORDING_STATE_CHANGE,
         payload: { streamId, state: "stopped" }
+      }).catch(() => {
       });
     }
     return true;
   }
   if (message.type === MessageType.DOWNLOAD_ERROR) {
     const { streamId, historyId, error } = message.payload;
+    logDebug("error", `\u30C0\u30A6\u30F3\u30ED\u30FC\u30C9\u5931\u6557\u3092\u53D7\u4FE1: streamId=${streamId}, error=${error}`);
+    currentDownloadProgress = null;
+    currentDownloadStreamId = null;
     if (historyId) {
       updateHistoryEntry(historyId, {
         status: "failed",
@@ -650,6 +760,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
   if (message.type === MessageType.STOP_DOWNLOAD) {
     const { streamId } = message.payload;
+    logDebug("info", `\u30C0\u30A6\u30F3\u30ED\u30FC\u30C9\u505C\u6B62\u30EA\u30AF\u30A8\u30B9\u30C8\u3092\u53D7\u4FE1: streamId=${streamId}`);
     const recording = recordingStates.get(streamId);
     if (recording) {
       recording.controller.abort();
@@ -657,11 +768,19 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       chrome.runtime.sendMessage({
         type: MessageType.RECORDING_STATE_CHANGE,
         payload: { streamId, state: "stopped" }
+      }).catch(() => {
       });
-      sendResponse({ success: true });
-    } else {
-      sendResponse({ success: false, error: "No active download" });
     }
+    chrome.runtime.sendMessage({
+      type: MessageType.STOP_DOWNLOAD,
+      payload: { streamId }
+    }).catch(() => {
+    });
+    if (currentDownloadStreamId === streamId) {
+      currentDownloadStreamId = null;
+      currentDownloadProgress = null;
+    }
+    sendResponse({ success: true });
     return true;
   }
   if (message.type === MessageType.STOP_RECORDING) {
@@ -688,6 +807,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     }
     capturedStreams.delete(streamId);
     currentTimes.delete(streamId);
+    persistStreams();
+    logDebug("info", `\u30B9\u30C8\u30EA\u30FC\u30E0\u524A\u9664: streamId=${streamId}`);
     sendResponse({ success: true });
     return true;
   }
@@ -695,6 +816,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     capturedStreams.clear();
     currentTimes.clear();
     videoIdToStreamId.clear();
+    persistStreams();
+    logDebug("info", "\u5168\u30B9\u30C8\u30EA\u30FC\u30E0\u524A\u9664");
     sendResponse({ success: true });
     return true;
   }
@@ -711,8 +834,36 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     });
     return true;
   }
+  if (message.type === MessageType.DEBUG_LOG) {
+    const entry = message.payload;
+    debugLogs.push(entry);
+    if (debugLogs.length > MAX_DEBUG_LOGS) {
+      debugLogs.shift();
+    }
+    return false;
+  }
+  if (message.type === MessageType.GET_DEBUG_LOGS) {
+    sendResponse({ type: MessageType.DEBUG_LOGS_RESPONSE, payload: debugLogs });
+    return true;
+  }
+  if (message.type === MessageType.CLEAR_DEBUG_LOGS) {
+    debugLogs.length = 0;
+    sendResponse({ success: true });
+    return true;
+  }
+  if (message.type === MessageType.GET_DOWNLOAD_STATUS) {
+    sendResponse({
+      type: MessageType.DOWNLOAD_STATUS_RESPONSE,
+      payload: {
+        streamId: currentDownloadStreamId,
+        progress: currentDownloadProgress
+      }
+    });
+    return true;
+  }
   return false;
 });
+restoreStreams();
 async function attachExistingTabs() {
   try {
     const tabs = await chrome.tabs.query({ url: "*://*.twitcasting.tv/*" });

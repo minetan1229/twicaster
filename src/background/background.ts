@@ -649,6 +649,8 @@ chrome.runtime.onMessage.addListener((message: Message, sender, sendResponse) =>
   
   if (message.type === MessageType.STOP_DOWNLOAD) {
     const { streamId } = message.payload as { streamId: string };
+    logDebug('info', `ダウンロード停止リクエストを受信: streamId=${streamId}`);
+
     const recording = recordingStates.get(streamId);
     if (recording) {
       recording.controller.abort();
@@ -656,11 +658,21 @@ chrome.runtime.onMessage.addListener((message: Message, sender, sendResponse) =>
       chrome.runtime.sendMessage({
         type: MessageType.RECORDING_STATE_CHANGE,
         payload: { streamId, state: 'stopped' },
-      });
-      sendResponse({ success: true });
-    } else {
-      sendResponse({ success: false, error: 'No active download' });
+      }).catch(() => {});
     }
+
+    // オフスクリーンドキュメントへ STOP_DOWNLOAD を転送
+    chrome.runtime.sendMessage({
+      type: MessageType.STOP_DOWNLOAD,
+      payload: { streamId },
+    }).catch(() => {});
+
+    if (currentDownloadStreamId === streamId) {
+      currentDownloadStreamId = null;
+      currentDownloadProgress = null;
+    }
+
+    sendResponse({ success: true });
     return true;
   }
   

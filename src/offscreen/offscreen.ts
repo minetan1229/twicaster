@@ -268,18 +268,29 @@ async function clipVideo(
       });
     }
   );
-  
+
+  if (abortSignal.aborted) {
+    throw new DOMException('Aborted', 'AbortError');
+  }
+
   for (let i = 0; i < segmentDataArray.length; i++) {
+    if (abortSignal.aborted) {
+      throw new DOMException('Aborted', 'AbortError');
+    }
     const segmentFilename = `segment_${i}.ts`;
     await ffmpegInstance.writeFile(segmentFilename, segmentDataArray[i]);
     segmentFiles.push(segmentFilename);
   }
-  
+
+  if (abortSignal.aborted) {
+    throw new DOMException('Aborted', 'AbortError');
+  }
+
   reportProgress({ stage: 'processing', progress: 75, message: 'セグメントを結合中...' });
-  
+
   const concatList = segmentFiles.map(f => `file '${f}'`).join('\n');
   await ffmpegInstance.writeFile('concat.list', concatList);
-  
+
   await ffmpegInstance.exec([
     '-y', '-f', 'concat', '-safe', '0', '-i', 'concat.list',
     '-c', 'copy', '-movflags', '+faststart', outputFilename
@@ -542,9 +553,11 @@ chrome.runtime.onMessage.addListener(async (message: { type: string; payload?: u
         payload: { streamId: payload.streamId, historyId: payload.historyId, fileSize: blob.size }
       }).catch(() => {});
     } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : '不明なエラー';
-      logDebug('error', `ダウンロード処理エラー: ${errorMessage}`, error);
-      reportProgress({ stage: 'error', progress: 0, message: 'ダウンロードに失敗しました', error: errorMessage });
+      const isAborted = (error instanceof DOMException && error.name === 'AbortError') ||
+        (error instanceof Error && error.message.toLowerCase().includes('aborted'));
+      const errorMessage = isAborted ? 'ダウンロードは停止されました' : (error instanceof Error ? error.message : '不明なエラー');
+      logDebug(isAborted ? 'info' : 'error', `ダウンロード処理結果: ${errorMessage}`, error);
+      reportProgress({ stage: 'error', progress: 0, message: errorMessage, error: errorMessage });
       chrome.runtime.sendMessage({
         type: MessageType.DOWNLOAD_ERROR,
         payload: { streamId: payload.streamId, historyId: payload.historyId, error: errorMessage }
