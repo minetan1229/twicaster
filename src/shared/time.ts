@@ -5,8 +5,8 @@ export function parseTimeInput(input: string): number {
     throw new Error('Empty time input');
   }
   
-  if (/^\d+$/.test(trimmed)) {
-    return parseInt(trimmed, 10);
+  if (/^\d+(\.\d+)?$/.test(trimmed)) {
+    return parseFloat(trimmed);
   }
   
   const parts = trimmed.split(':').map(p => parseFloat(p.trim()));
@@ -31,12 +31,15 @@ export function parseTimeInput(input: string): number {
 export function formatTime(seconds: number): string {
   const hours = Math.floor(seconds / 3600);
   const minutes = Math.floor((seconds % 3600) / 60);
-  const secs = Math.floor(seconds % 60);
+  const secInt = Math.floor(seconds % 60);
+  const fraction = seconds - Math.floor(seconds);
+  const fracStr = fraction > 0.05 ? (fraction.toFixed(1).substring(1).replace(/\.0$/, '')) : '';
+  const secsFormatted = `${secInt.toString().padStart(2, '0')}${fracStr}`;
   
   if (hours > 0) {
-    return `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+    return `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}:${secsFormatted}`;
   }
-  return `${minutes.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+  return `${minutes.toString().padStart(2, '0')}:${secsFormatted}`;
 }
 
 export function formatTimeLong(seconds: number): string {
