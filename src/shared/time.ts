@@ -56,12 +56,17 @@ export function formatTimeLong(seconds: number): string {
   return `${secs.toFixed(1)}s`;
 }
 
-export function validateTimeRange(start: number, end: number, duration: number): { valid: boolean; error?: string; clampedStart?: number; clampedEnd?: number } {
+export function validateTimeRange(
+  start: number,
+  end: number,
+  duration: number,
+  isLive?: boolean
+): { valid: boolean; error?: string; clampedStart?: number; clampedEnd?: number } {
   if (start < 0) {
     return { valid: false, error: 'Start time cannot be negative' };
   }
   
-  if (end > duration) {
+  if (!isLive && duration > 0 && end > duration) {
     return { valid: false, error: `End time exceeds video duration (${formatTime(duration)})` };
   }
   
