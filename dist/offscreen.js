@@ -336,7 +336,13 @@ var MessageType = {
   HISTORY_LIST: "HISTORY_LIST",
   DELETE_HISTORY: "DELETE_HISTORY",
   OFFSCREEN_READY: "OFFSCREEN_READY",
-  CHECK_OFFSCREEN: "CHECK_OFFSCREEN"
+  CHECK_OFFSCREEN: "CHECK_OFFSCREEN",
+  DEBUG_LOG: "DEBUG_LOG",
+  GET_DEBUG_LOGS: "GET_DEBUG_LOGS",
+  DEBUG_LOGS_RESPONSE: "DEBUG_LOGS_RESPONSE",
+  CLEAR_DEBUG_LOGS: "CLEAR_DEBUG_LOGS",
+  GET_DOWNLOAD_STATUS: "GET_DOWNLOAD_STATUS",
+  DOWNLOAD_STATUS_RESPONSE: "DOWNLOAD_STATUS_RESPONSE"
 };
 
 // src/shared/hls.ts
@@ -521,29 +527,80 @@ function buildRequestHeaders(stream, url) {
 // src/offscreen/offscreen.ts
 var ffmpeg = null;
 var ffmpegLoaded = false;
+var ffmpegLoadingPromise = null;
+function logDebug(level, message, details) {
+  console[level](`[Offscreen] ${message}`, details !== void 0 ? details : "");
+  chrome.runtime.sendMessage({
+    type: MessageType.DEBUG_LOG,
+    payload: {
+      timestamp: Date.now(),
+      source: "offscreen",
+      level,
+      message,
+      details: details instanceof Error ? details.message : details
+    }
+  }).catch(() => {
+  });
+}
 chrome.runtime.sendMessage({ type: MessageType.OFFSCREEN_READY }).catch(() => {
 });
+logDebug("info", "\u30AA\u30D5\u30B9\u30AF\u30EA\u30FC\u30F3\u30C9\u30AD\u30E5\u30E1\u30F3\u30C8\u521D\u671F\u5316\u4E2D");
 var activeDownloads = /* @__PURE__ */ new Map();
 var MAX_PARALLEL_DOWNLOADS = 3;
 var MAX_RETRIES = 3;
 var RETRY_BASE_DELAY = 1e3;
-async function initFFmpeg() {
+async function initFFmpeg(isPreload = false) {
   if (ffmpegLoaded && ffmpeg) return;
-  ffmpeg = new FFmpeg();
-  ffmpeg.on("progress", (progress) => {
-    reportProgress({
-      stage: "processing",
-      progress: Math.round(progress.progress * 100),
-      message: `FFmpeg\u51E6\u7406\u4E2D: ${Math.round(progress.progress * 100)}%`
-    });
-  });
-  await ffmpeg.load({
-    coreURL: "ffmpeg-core/ffmpeg-core.js"
-  });
-  ffmpegLoaded = true;
+  if (ffmpegLoadingPromise) {
+    return ffmpegLoadingPromise;
+  }
+  ffmpegLoadingPromise = (async () => {
+    logDebug("info", `FFmpeg.wasm \u306E\u521D\u671F\u5316\u958B\u59CB (preload=${isPreload})`);
+    if (!isPreload) {
+      reportProgress({
+        stage: "fetching",
+        progress: 2,
+        message: "FFmpeg\u30A8\u30F3\u30B8\u30F3\u3092\u521D\u671F\u5316\u4E2D..."
+      });
+    }
+    try {
+      ffmpeg = new FFmpeg();
+      ffmpeg.on("log", ({ message }) => {
+        logDebug("info", `FFmpeg Core: ${message}`);
+      });
+      ffmpeg.on("progress", (progress) => {
+        const p = Math.max(0, Math.min(100, Math.round(progress.progress * 100)));
+        reportProgress({
+          stage: "processing",
+          progress: p,
+          message: `FFmpeg\u51E6\u7406\u4E2D: ${p}%`
+        });
+      });
+      await ffmpeg.load({
+        coreURL: chrome.runtime.getURL("ffmpeg-core/ffmpeg-core.js"),
+        wasmURL: chrome.runtime.getURL("ffmpeg-core/ffmpeg-core.wasm")
+      });
+      ffmpegLoaded = true;
+      logDebug("info", "FFmpeg.wasm \u306E\u30ED\u30FC\u30C9\u5B8C\u4E86");
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      logDebug("error", "FFmpeg\u521D\u671F\u5316\u306B\u5931\u6557\u3057\u307E\u3057\u305F", msg);
+      throw new Error(`FFmpeg\u521D\u671F\u5316\u30A8\u30E9\u30FC: ${msg}`, { cause: error });
+    } finally {
+      if (!ffmpegLoaded) {
+        ffmpegLoadingPromise = null;
+      }
+    }
+  })();
+  return ffmpegLoadingPromise;
 }
+initFFmpeg(true).catch((err) => {
+  logDebug("warn", "FFmpeg\u30D0\u30C3\u30AF\u30B0\u30E9\u30A6\u30F3\u30C9\u5148\u884C\u30ED\u30FC\u30C9\u5F85\u6A5F\u4E2D\u307E\u305F\u306F\u30A8\u30E9\u30FC", err);
+});
 function reportProgress(progress) {
-  chrome.runtime.sendMessage({ type: MessageType.DOWNLOAD_PROGRESS, payload: progress });
+  logDebug("info", `Progress [${progress.stage}]: ${progress.progress}% - ${progress.message}`);
+  chrome.runtime.sendMessage({ type: MessageType.DOWNLOAD_PROGRESS, payload: progress }).catch(() => {
+  });
 }
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -684,10 +741,19 @@ async function clipVideo(masterUrl, headers, startTime, endTime, outputFilename,
       });
     }
   );
+  if (abortSignal.aborted) {
+    throw new DOMException("Aborted", "AbortError");
+  }
   for (let i = 0; i < segmentDataArray.length; i++) {
+    if (abortSignal.aborted) {
+      throw new DOMException("Aborted", "AbortError");
+    }
     const segmentFilename = `segment_${i}.ts`;
     await ffmpegInstance.writeFile(segmentFilename, segmentDataArray[i]);
     segmentFiles.push(segmentFilename);
+  }
+  if (abortSignal.aborted) {
+    throw new DOMException("Aborted", "AbortError");
   }
   reportProgress({ stage: "processing", progress: 75, message: "\u30BB\u30B0\u30E1\u30F3\u30C8\u3092\u7D50\u5408\u4E2D..." });
   const concatList = segmentFiles.map((f) => `file '${f}'`).join("\n");
@@ -874,40 +940,55 @@ chrome.runtime.onMessage.addListener(async (message) => {
         );
       }
       const url = URL.createObjectURL(blob);
-      const downloadId = await new Promise((resolve) => {
+      logDebug("info", `Blob \u751F\u6210\u5B8C\u4E86: ${blob.size} bytes, \u30C0\u30A6\u30F3\u30ED\u30FC\u30C9\u30C0\u30A4\u30A2\u30ED\u30B0\u547C\u3073\u51FA\u3057\u4E2D...`);
+      const downloadId = await new Promise((resolve, reject) => {
         chrome.downloads.download({
           url,
           filename: payload.outputFilename,
           saveAs: true
-        }, (downloadId2) => {
+        }, (dId) => {
           if (chrome.runtime.lastError) {
-            console.error("Download error:", chrome.runtime.lastError);
-            resolve(void 0);
+            reject(new Error(`chrome.downloads: ${chrome.runtime.lastError.message}`));
+          } else if (dId === void 0) {
+            reject(new Error("\u30C0\u30A6\u30F3\u30ED\u30FC\u30C9ID\u306E\u53D6\u5F97\u306B\u5931\u6557\u3057\u307E\u3057\u305F"));
           } else {
-            resolve(downloadId2);
+            resolve(dId);
           }
         });
       });
-      URL.revokeObjectURL(url);
-      if (downloadId) {
-        await new Promise((resolve) => {
-          const listener = (delta) => {
-            if (delta.id === downloadId && delta.state && delta.state.current === "complete") {
+      logDebug("info", `\u30C0\u30A6\u30F3\u30ED\u30FC\u30C9\u958B\u59CB (ID: ${downloadId})`);
+      await new Promise((resolve, reject) => {
+        const listener = (delta) => {
+          if (delta.id === downloadId) {
+            if (delta.state && delta.state.current === "complete") {
               chrome.downloads.onChanged.removeListener(listener);
+              URL.revokeObjectURL(url);
               resolve();
-            } else if (delta.id === downloadId && delta.state && delta.state.current === "interrupted") {
+            } else if (delta.state && delta.state.current === "interrupted") {
               chrome.downloads.onChanged.removeListener(listener);
-              resolve();
+              URL.revokeObjectURL(url);
+              reject(new Error(`\u30C0\u30A6\u30F3\u30ED\u30FC\u30C9\u4E2D\u65AD: ${delta.error?.current || "\u4E0D\u660E\u306A\u30A8\u30E9\u30FC"}`));
             }
-          };
-          chrome.downloads.onChanged.addListener(listener);
-        });
-      }
-      chrome.runtime.sendMessage({ type: MessageType.DOWNLOAD_COMPLETE, payload: { streamId: payload.streamId, historyId: payload.historyId, fileSize: blob.size } });
+          }
+        };
+        chrome.downloads.onChanged.addListener(listener);
+      });
+      logDebug("info", "\u30C0\u30A6\u30F3\u30ED\u30FC\u30C9\u6B63\u5E38\u5B8C\u4E86");
+      chrome.runtime.sendMessage({
+        type: MessageType.DOWNLOAD_COMPLETE,
+        payload: { streamId: payload.streamId, historyId: payload.historyId, fileSize: blob.size }
+      }).catch(() => {
+      });
     } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : "\u4E0D\u660E\u306A\u30A8\u30E9\u30FC";
-      reportProgress({ stage: "error", progress: 0, message: "\u30C0\u30A6\u30F3\u30ED\u30FC\u30C9\u306B\u5931\u6557\u3057\u307E\u3057\u305F", error: errorMessage });
-      chrome.runtime.sendMessage({ type: MessageType.DOWNLOAD_ERROR, payload: { streamId: payload.streamId, historyId: payload.historyId, error: errorMessage } });
+      const isAborted = error instanceof DOMException && error.name === "AbortError" || error instanceof Error && error.message.toLowerCase().includes("aborted");
+      const errorMessage = isAborted ? "\u30C0\u30A6\u30F3\u30ED\u30FC\u30C9\u306F\u505C\u6B62\u3055\u308C\u307E\u3057\u305F" : error instanceof Error ? error.message : "\u4E0D\u660E\u306A\u30A8\u30E9\u30FC";
+      logDebug(isAborted ? "info" : "error", `\u30C0\u30A6\u30F3\u30ED\u30FC\u30C9\u51E6\u7406\u7D50\u679C: ${errorMessage}`, error);
+      reportProgress({ stage: "error", progress: 0, message: errorMessage, error: errorMessage });
+      chrome.runtime.sendMessage({
+        type: MessageType.DOWNLOAD_ERROR,
+        payload: { streamId: payload.streamId, historyId: payload.historyId, error: errorMessage }
+      }).catch(() => {
+      });
     } finally {
       activeDownloads.delete(payload.streamId);
     }
@@ -918,12 +999,14 @@ chrome.runtime.onMessage.addListener(async (message) => {
     if (controller) {
       controller.abort();
       activeDownloads.delete(streamId);
+      logDebug("info", `\u30C0\u30A6\u30F3\u30ED\u30FC\u30C9\u505C\u6B62: streamId=${streamId}`);
     }
   }
   if (message.type === MessageType.CHECK_OFFSCREEN) {
+    logDebug("info", "CHECK_OFFSCREEN \u53D7\u4FE1\u3001OFFSCREEN_READY \u3092\u5FDC\u7B54");
     chrome.runtime.sendMessage({ type: MessageType.OFFSCREEN_READY }).catch(() => {
     });
   }
 });
-console.log("\u30AA\u30D5\u30B9\u30AF\u30EA\u30FC\u30F3\u30C9\u30AD\u30E5\u30E1\u30F3\u30C8\u304C\u8AAD\u307F\u8FBC\u307E\u308C\u307E\u3057\u305F");
+logDebug("info", "\u30AA\u30D5\u30B9\u30AF\u30EA\u30FC\u30F3\u30C9\u30AD\u30E5\u30E1\u30F3\u30C8\u306E\u521D\u671F\u5316\u5B8C\u4E86");
 //# sourceMappingURL=offscreen.js.map

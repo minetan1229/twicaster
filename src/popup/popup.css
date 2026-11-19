@@ -260,6 +260,16 @@ header h1 {
   background: #e8eaed;
 }
 
+.btn-danger {
+  background: #d93025;
+  color: #fff;
+  margin-top: 8px;
+}
+
+.btn-danger:hover {
+  background: #b3261e;
+}
+
 .btn-link {
   background: none;
   color: #1a73e8;

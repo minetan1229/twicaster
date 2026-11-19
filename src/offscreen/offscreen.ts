@@ -5,6 +5,7 @@ import { buildRequestHeaders } from '../shared/headers';
 
 let ffmpeg: FFmpeg | null = null;
 let ffmpegLoaded = false;
+let ffmpegLoadingPromise: Promise<void> | null = null;
 
 function logDebug(level: 'info' | 'warn' | 'error', message: string, details?: unknown): void {
   console[level](`[Offscreen] ${message}`, details !== undefined ? details : '');
@@ -30,44 +31,62 @@ const MAX_PARALLEL_DOWNLOADS = 3;
 const MAX_RETRIES = 3;
 const RETRY_BASE_DELAY = 1000;
 
-async function initFFmpeg(): Promise<void> {
+async function initFFmpeg(isPreload = false): Promise<void> {
   if (ffmpegLoaded && ffmpeg) return;
-  
-  logDebug('info', 'FFmpeg.wasm の初期化開始');
-  reportProgress({
-    stage: 'fetching',
-    progress: 2,
-    message: 'FFmpegエンジンを初期化中...',
-  });
-
-  try {
-    ffmpeg = new FFmpeg();
-    
-    ffmpeg.on('log', ({ message }: { message: string }) => {
-      logDebug('info', `FFmpeg Core: ${message}`);
-    });
-
-    ffmpeg.on('progress', (progress: { progress: number }) => {
-      const p = Math.max(0, Math.min(100, Math.round(progress.progress * 100)));
-      reportProgress({
-        stage: 'processing',
-        progress: p,
-        message: `FFmpeg処理中: ${p}%`,
-      });
-    });
-    
-    await ffmpeg.load({
-      coreURL: chrome.runtime.getURL('ffmpeg-core/ffmpeg-core.js'),
-      wasmURL: chrome.runtime.getURL('ffmpeg-core/ffmpeg-core.wasm'),
-    });
-    ffmpegLoaded = true;
-    logDebug('info', 'FFmpeg.wasm のロード完了');
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    logDebug('error', 'FFmpeg初期化に失敗しました', msg);
-    throw new Error(`FFmpeg初期化エラー: ${msg}`, { cause: error });
+  if (ffmpegLoadingPromise) {
+    return ffmpegLoadingPromise;
   }
+  
+  ffmpegLoadingPromise = (async () => {
+    logDebug('info', `FFmpeg.wasm の初期化開始 (preload=${isPreload})`);
+    if (!isPreload) {
+      reportProgress({
+        stage: 'fetching',
+        progress: 2,
+        message: 'FFmpegエンジンを初期化中...',
+      });
+    }
+
+    try {
+      ffmpeg = new FFmpeg();
+      
+      ffmpeg.on('log', ({ message }: { message: string }) => {
+        logDebug('info', `FFmpeg Core: ${message}`);
+      });
+
+      ffmpeg.on('progress', (progress: { progress: number }) => {
+        const p = Math.max(0, Math.min(100, Math.round(progress.progress * 100)));
+        reportProgress({
+          stage: 'processing',
+          progress: p,
+          message: `FFmpeg処理中: ${p}%`,
+        });
+      });
+      
+      await ffmpeg.load({
+        coreURL: chrome.runtime.getURL('ffmpeg-core/ffmpeg-core.js'),
+        wasmURL: chrome.runtime.getURL('ffmpeg-core/ffmpeg-core.wasm'),
+      });
+      ffmpegLoaded = true;
+      logDebug('info', 'FFmpeg.wasm のロード完了');
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      logDebug('error', 'FFmpeg初期化に失敗しました', msg);
+      throw new Error(`FFmpeg初期化エラー: ${msg}`, { cause: error });
+    } finally {
+      if (!ffmpegLoaded) {
+        ffmpegLoadingPromise = null;
+      }
+    }
+  })();
+
+  return ffmpegLoadingPromise;
 }
+
+// バックグラウンドで即時プリロードを開始
+initFFmpeg(true).catch(err => {
+  logDebug('warn', 'FFmpegバックグラウンド先行ロード待機中またはエラー', err);
+});
 
 function reportProgress(progress: DownloadProgress): void {
   logDebug('info', `Progress [${progress.stage}]: ${progress.progress}% - ${progress.message}`);
@@ -268,18 +287,29 @@ async function clipVideo(
       });
     }
   );
-  
+
+  if (abortSignal.aborted) {
+    throw new DOMException('Aborted', 'AbortError');
+  }
+
   for (let i = 0; i < segmentDataArray.length; i++) {
+    if (abortSignal.aborted) {
+      throw new DOMException('Aborted', 'AbortError');
+    }
     const segmentFilename = `segment_${i}.ts`;
     await ffmpegInstance.writeFile(segmentFilename, segmentDataArray[i]);
     segmentFiles.push(segmentFilename);
   }
-  
+
+  if (abortSignal.aborted) {
+    throw new DOMException('Aborted', 'AbortError');
+  }
+
   reportProgress({ stage: 'processing', progress: 75, message: 'セグメントを結合中...' });
-  
+
   const concatList = segmentFiles.map(f => `file '${f}'`).join('\n');
   await ffmpegInstance.writeFile('concat.list', concatList);
-  
+
   await ffmpegInstance.exec([
     '-y', '-f', 'concat', '-safe', '0', '-i', 'concat.list',
     '-c', 'copy', '-movflags', '+faststart', outputFilename
@@ -542,9 +572,11 @@ chrome.runtime.onMessage.addListener(async (message: { type: string; payload?: u
         payload: { streamId: payload.streamId, historyId: payload.historyId, fileSize: blob.size }
       }).catch(() => {});
     } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : '不明なエラー';
-      logDebug('error', `ダウンロード処理エラー: ${errorMessage}`, error);
-      reportProgress({ stage: 'error', progress: 0, message: 'ダウンロードに失敗しました', error: errorMessage });
+      const isAborted = (error instanceof DOMException && error.name === 'AbortError') ||
+        (error instanceof Error && error.message.toLowerCase().includes('aborted'));
+      const errorMessage = isAborted ? 'ダウンロードは停止されました' : (error instanceof Error ? error.message : '不明なエラー');
+      logDebug(isAborted ? 'info' : 'error', `ダウンロード処理結果: ${errorMessage}`, error);
+      reportProgress({ stage: 'error', progress: 0, message: errorMessage, error: errorMessage });
       chrome.runtime.sendMessage({
         type: MessageType.DOWNLOAD_ERROR,
         payload: { streamId: payload.streamId, historyId: payload.historyId, error: errorMessage }

@@ -389,6 +389,11 @@ chrome.debugger.onEvent.addListener(async (source, method, params?: object) => {
       persistStreams();
       logDebug('info', `ストリームをキャプチャしました: ${stream.tabTitle} (${stream.masterUrl})`);
 
+      // ストリーム検出時にオフスクリーン (FFmpeg) を先行ウォームアップ
+      ensureOffscreenDocument().catch(err => {
+        logDebug('warn', 'オフスクリーン先行起動エラー', err);
+      });
+
       const initialMessage: Message = {
         type: MessageType.STREAM_CAPTURED,
         payload: stream,
@@ -420,6 +425,8 @@ chrome.debugger.onEvent.addListener(async (source, method, params?: object) => {
 
 chrome.runtime.onMessage.addListener((message: Message, sender, sendResponse) => {
   if (message.type === MessageType.GET_STREAMS) {
+    // ポップアップ起動時にもオフスクリーンをバックグラウンドで先行起動
+    ensureOffscreenDocument().catch(() => {});
     const streams = Array.from(capturedStreams.values());
     sendResponse({ type: MessageType.STREAMS_LIST, payload: streams });
     return true;
@@ -649,6 +656,8 @@ chrome.runtime.onMessage.addListener((message: Message, sender, sendResponse) =>
   
   if (message.type === MessageType.STOP_DOWNLOAD) {
     const { streamId } = message.payload as { streamId: string };
+    logDebug('info', `ダウンロード停止リクエストを受信: streamId=${streamId}`);
+
     const recording = recordingStates.get(streamId);
     if (recording) {
       recording.controller.abort();
@@ -656,11 +665,21 @@ chrome.runtime.onMessage.addListener((message: Message, sender, sendResponse) =>
       chrome.runtime.sendMessage({
         type: MessageType.RECORDING_STATE_CHANGE,
         payload: { streamId, state: 'stopped' },
-      });
-      sendResponse({ success: true });
-    } else {
-      sendResponse({ success: false, error: 'No active download' });
+      }).catch(() => {});
     }
+
+    // オフスクリーンドキュメントへ STOP_DOWNLOAD を転送
+    chrome.runtime.sendMessage({
+      type: MessageType.STOP_DOWNLOAD,
+      payload: { streamId },
+    }).catch(() => {});
+
+    if (currentDownloadStreamId === streamId) {
+      currentDownloadStreamId = null;
+      currentDownloadProgress = null;
+    }
+
+    sendResponse({ success: true });
     return true;
   }
   

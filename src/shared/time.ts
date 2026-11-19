@@ -29,17 +29,12 @@ export function parseTimeInput(input: string): number {
 }
 
 export function formatTime(seconds: number): string {
-  const hours = Math.floor(seconds / 3600);
-  const minutes = Math.floor((seconds % 3600) / 60);
-  const secInt = Math.floor(seconds % 60);
-  const fraction = seconds - Math.floor(seconds);
-  const fracStr = fraction > 0.05 ? (fraction.toFixed(1).substring(1).replace(/\.0$/, '')) : '';
-  const secsFormatted = `${secInt.toString().padStart(2, '0')}${fracStr}`;
+  const rounded = Math.round(seconds);
+  const hours = Math.floor(rounded / 3600);
+  const minutes = Math.floor((rounded % 3600) / 60);
+  const secInt = Math.floor(rounded % 60);
   
-  if (hours > 0) {
-    return `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}:${secsFormatted}`;
-  }
-  return `${minutes.toString().padStart(2, '0')}:${secsFormatted}`;
+  return `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}:${secInt.toString().padStart(2, '0')}`;
 }
 
 export function formatTimeLong(seconds: number): string {

@@ -25,6 +25,7 @@ const elements = {
   durationDisplay: document.getElementById('duration-display')!,
   outputFilename: document.getElementById('output-filename') as HTMLInputElement,
   downloadBtn: document.getElementById('download-btn') as HTMLButtonElement,
+  cancelBtn: document.getElementById('cancel-btn') as HTMLButtonElement,
   progressContainer: document.getElementById('progress-container')!,
   progressFill: document.getElementById('progress-fill')!,
   progressMessage: document.getElementById('progress-message')!,
@@ -242,9 +243,10 @@ function renderPresets(stream: CapturedStream): void {
         chrome.runtime.sendMessage(
           { type: MessageType.GET_CURRENT_TIME, payload: { streamId: currentStream.id } },
           (response: Message | undefined) => {
-            const value = (response && response.type === MessageType.CURRENT_TIME_RESPONSE && response.payload)
+            const rawValue = (response && response.type === MessageType.CURRENT_TIME_RESPONSE && response.payload)
               ? (response.payload as CurrentTimeInfo).currentTime
               : parseFloat(btnEl.dataset.value || '0');
+            const value = Math.max(0, Math.floor(rawValue));
             elements.startSeconds.value = value.toString();
             elements.startHhmmss.value = formatTime(value);
             updateDurationDisplay();
@@ -287,9 +289,10 @@ function renderPresets(stream: CapturedStream): void {
         chrome.runtime.sendMessage(
           { type: MessageType.GET_CURRENT_TIME, payload: { streamId: currentStream.id } },
           (response: Message | undefined) => {
-            const value = (response && response.type === MessageType.CURRENT_TIME_RESPONSE && response.payload)
+            const rawValue = (response && response.type === MessageType.CURRENT_TIME_RESPONSE && response.payload)
               ? (response.payload as CurrentTimeInfo).currentTime
               : parseFloat(btnEl.dataset.value || duration.toString());
+            const value = Math.max(0, Math.floor(rawValue));
             elements.endSeconds.value = value.toString();
             elements.endHhmmss.value = formatTime(value);
             updateDurationDisplay();
@@ -364,12 +367,20 @@ function resetProgress(): void {
   elements.progressDetail.textContent = '';
   elements.errorMessage.classList.add('hidden');
   elements.errorMessage.textContent = '';
+  elements.cancelBtn.classList.add('hidden');
+  elements.downloadBtn.classList.remove('hidden');
 }
 
 function showProgress(progress: DownloadProgress): void {
   elements.progressContainer.classList.remove('hidden');
   elements.progressFill.style.width = `${progress.progress}%`;
   elements.progressMessage.textContent = progress.message;
+
+  if (progress.stage !== 'complete' && progress.stage !== 'error') {
+    elements.downloadBtn.classList.add('hidden');
+    elements.cancelBtn.classList.remove('hidden');
+    elements.cancelBtn.disabled = false;
+  }
 
   if (progress.speed !== undefined && progress.eta !== undefined && progress.segmentsDownloaded !== undefined && progress.segmentsTotal !== undefined) {
     const speedMB = (progress.speed / 1024 / 1024).toFixed(2);
@@ -384,10 +395,14 @@ function showProgress(progress: DownloadProgress): void {
   if (progress.stage === 'error') {
     elements.errorMessage.textContent = progress.error || 'ダウンロードに失敗しました';
     elements.errorMessage.classList.remove('hidden');
+    elements.downloadBtn.classList.remove('hidden');
     elements.downloadBtn.disabled = false;
+    elements.cancelBtn.classList.add('hidden');
   }
 
   if (progress.stage === 'complete') {
+    elements.downloadBtn.classList.remove('hidden');
+    elements.cancelBtn.classList.add('hidden');
     setTimeout(() => {
       resetProgress();
       showStreamList();
@@ -398,7 +413,9 @@ function showProgress(progress: DownloadProgress): void {
 function showError(message: string): void {
   elements.errorMessage.textContent = message;
   elements.errorMessage.classList.remove('hidden');
+  elements.downloadBtn.classList.remove('hidden');
   elements.downloadBtn.disabled = false;
+  elements.cancelBtn.classList.add('hidden');
 }
 
 function renderStreamList(): void {
@@ -614,6 +631,18 @@ elements.downloadBtn.addEventListener('click', async () => {
       endTime,
       quality,
       outputFilename,
+    },
+  });
+});
+
+elements.cancelBtn.addEventListener('click', () => {
+  if (!currentStream) return;
+  elements.cancelBtn.disabled = true;
+  showProgress({ stage: 'error', progress: 0, message: 'ダウンロードを停止中...', error: 'ユーザーによってダウンロードが停止されました' });
+  chrome.runtime.sendMessage({
+    type: MessageType.STOP_DOWNLOAD,
+    payload: {
+      streamId: currentStream.id,
     },
   });
 });
