@@ -13,26 +13,12 @@
       <p class="subtitle">TwitCasting VOD/Live Downloader</p>
     </header>
 
-    <div class="tabs">
-      <button class="tab active" data-tab="streams" role="tab" aria-selected="true">検出ストリーム</button>
-      <button class="tab" data-tab="history" role="tab" aria-selected="false">履歴</button>
-    </div>
-
-    <div class="tab-panels">
-      <div class="tab-panel active" data-tab="streams" role="tabpanel">
-        <div id="empty-state" class="hidden">
-          <p>ストリームが検出されていません。</p>
-          <p>TwitCastingのページを開くと自動的に検出され、最新のものが上に追加されます。</p>
-        </div>
-        <div id="streams"></div>
+    <div id="stream-list-section" class="section">
+      <div id="empty-state" class="hidden">
+        <p>ストリームが検出されていません。</p>
+        <p>TwitCastingのページを開くと自動的に検出され、最新のものが上に追加されます。</p>
       </div>
-
-      <div class="tab-panel hidden" data-tab="history" role="tabpanel">
-        <div id="history-empty" class="hidden">
-          <p>ダウンロード履歴がありません。</p>
-        </div>
-        <div id="history-streams"></div>
-      </div>
+      <div id="streams"></div>
     </div>
 
     <div id="stream-detail" class="section hidden">
@@ -87,33 +73,11 @@
       </div>
 
       <button id="download-btn" class="btn btn-primary" disabled>ダウンロード</button>
-      <button id="download-all-btn" class="btn btn-secondary hidden">全長ダウンロード</button>
       <p id="error-message" class="error-message hidden"></p>
     </div>
 
-    <div id="about-modal" class="modal hidden">
-      <div class="modal-backdrop"></div>
-      <div class="modal-content">
-        <button class="modal-close" aria-label="閉じる">&times;</button>
-        <h2>Twicaster について</h2>
-        <p>TwitCastingのVODおよびライブ配信をダウンロードする拡張機能です。</p>
-        <p>バージョン: <span id="modal-version"></span></p>
-      </div>
-    </div>
-
-    <div id="confirm-modal" class="modal hidden">
-      <div class="modal-backdrop"></div>
-      <div class="modal-content">
-        <p id="confirm-message"></p>
-        <div class="modal-actions">
-          <button id="confirm-cancel" class="btn btn-secondary">キャンセル</button>
-          <button id="confirm-ok" class="btn btn-primary">OK</button>
-        </div>
-      </div>
-    </div>
-
     <footer>
-      <button id="about-btn" class="btn btn-link">バージョン <span id="version"></span></button>
+      <span>バージョン <span id="version"></span></span>
       <span id="storage-info"></span>
     </footer>
   </div>

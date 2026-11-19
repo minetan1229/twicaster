@@ -77,23 +77,12 @@ function validateTimeRange(start, end, duration) {
 // src/popup/popup.ts
 var currentStream = null;
 var streams = [];
-var history = [];
-var activeTab = "streams";
-var confirmCallback = null;
 var elements = {
-  tabs: document.querySelectorAll(".tab"),
-  tabPanels: document.querySelectorAll(".tab-panel"),
-  streamLists: {
-    streams: document.getElementById("streams"),
-    history: document.getElementById("history-streams")
-  },
-  emptyStates: {
-    streams: document.getElementById("empty-state"),
-    history: document.getElementById("history-empty")
-  },
+  streamListSection: document.getElementById("stream-list-section"),
+  streams: document.getElementById("streams"),
+  emptyState: document.getElementById("empty-state"),
   streamDetail: document.getElementById("stream-detail"),
   backBtn: document.getElementById("back-btn"),
-  clearAllBtn: document.getElementById("clear-all-btn"),
   streamTitle: document.getElementById("stream-title"),
   streamUrl: document.getElementById("stream-url"),
   streamLiveInfo: document.getElementById("stream-live-info"),
@@ -107,56 +96,23 @@ var elements = {
   durationDisplay: document.getElementById("duration-display"),
   outputFilename: document.getElementById("output-filename"),
   downloadBtn: document.getElementById("download-btn"),
-  downloadAllBtn: document.getElementById("download-all-btn"),
   progressContainer: document.getElementById("progress-container"),
   progressFill: document.getElementById("progress-fill"),
   progressMessage: document.getElementById("progress-message"),
   progressDetail: document.getElementById("progress-detail"),
   errorMessage: document.getElementById("error-message"),
-  aboutBtn: document.getElementById("about-btn"),
-  aboutModal: document.getElementById("about-modal"),
-  confirmModal: document.getElementById("confirm-modal"),
-  confirmMessage: document.getElementById("confirm-message"),
-  confirmOk: document.getElementById("confirm-ok"),
-  confirmCancel: document.getElementById("confirm-cancel"),
-  modalCloseButtons: document.querySelectorAll(".modal-close"),
-  modalBackdrops: document.querySelectorAll(".modal-backdrop"),
   version: document.getElementById("version"),
-  modalVersion: document.getElementById("modal-version"),
   storageInfo: document.getElementById("storage-info")
 };
-function showTab(tab) {
-  activeTab = tab;
-  currentStream = null;
-  elements.tabs.forEach((t) => {
-    const isActive = t.dataset.tab === tab;
-    t.classList.toggle("active", isActive);
-    t.setAttribute("aria-selected", isActive ? "true" : "false");
-  });
-  showStreamList();
-}
 function showStreamList() {
+  currentStream = null;
   elements.streamDetail.classList.add("hidden");
-  elements.tabPanels.forEach((p) => {
-    const isActive = p.dataset.tab === activeTab;
-    p.classList.toggle("active", isActive);
-    p.classList.toggle("hidden", !isActive);
-  });
-  const emptyState = elements.emptyStates[activeTab];
-  const streamList = elements.streamLists[activeTab];
+  elements.streamListSection.classList.remove("hidden");
   renderStreamList();
-  const hasItems = activeTab === "streams" ? streams.length > 0 : history.length > 0;
-  if (!hasItems) {
-    emptyState.classList.remove("hidden");
-    streamList.classList.add("hidden");
-  } else {
-    emptyState.classList.add("hidden");
-    streamList.classList.remove("hidden");
-  }
 }
 function showStreamDetail(stream) {
   currentStream = stream;
-  elements.tabPanels.forEach((p) => p.classList.add("hidden"));
+  elements.streamListSection.classList.add("hidden");
   elements.streamDetail.classList.remove("hidden");
   elements.streamTitle.textContent = stream.tabTitle;
   elements.streamUrl.textContent = stream.masterUrl;
@@ -197,7 +153,6 @@ function showStreamDetail(stream) {
     elements.streamLiveInfo.classList.add("hidden");
   }
   elements.downloadBtn.disabled = false;
-  elements.downloadAllBtn.disabled = false;
   resetProgress();
 }
 function renderPresets(stream) {
@@ -216,9 +171,6 @@ function renderPresets(stream) {
   ];
   if (isLive) {
     startPresets.push({ label: "\u914D\u4FE1\u958B\u59CB", value: 0 });
-    if (stream.liveInfo?.canSkipUntil) {
-      startPresets.push({ label: "\u9061\u53CA\u9650\u754C", value: Math.floor((stream.liveInfo.canSkipUntil * 1e3 - programStart) / 1e3) });
-    }
   } else {
     startPresets.push({ label: "\u6700\u5927(\u5168\u9577)", value: duration });
   }
@@ -229,14 +181,11 @@ function renderPresets(stream) {
     { label: "+30\u5206", delta: 1800 },
     { label: "+1\u6642\u9593", delta: 3600 }
   ];
-  if (!isLive) {
-    endPresets.push({ label: "\u6700\u5927(\u5168\u9577)", value: duration });
-  }
   elements.startPresets.innerHTML = startPresets.map(
-    (p) => `<button type="button" class="btn btn-preset" ${p.value !== void 0 ? `data-value="${p.value}"` : ""} ${p.delta !== void 0 ? `data-delta="${p.delta}"` : ""} ${p.action ? `data-action="${p.action}"` : ""}>${p.label}</button>`
+    (p) => `<button type="button" class="btn-preset" ${p.value !== void 0 ? `data-value="${p.value}"` : ""} ${p.delta !== void 0 ? `data-delta="${p.delta}"` : ""} ${p.action ? `data-action="${p.action}"` : ""}>${p.label}</button>`
   ).join("");
   elements.endPresets.innerHTML = endPresets.map(
-    (p) => `<button type="button" class="btn btn-preset" ${p.value !== void 0 ? `data-value="${p.value}"` : ""} ${p.delta !== void 0 ? `data-delta="${p.delta}"` : ""} ${p.action ? `data-action="${p.action}"` : ""}>${p.label}</button>`
+    (p) => `<button type="button" class="btn-preset" ${p.value !== void 0 ? `data-value="${p.value}"` : ""} ${p.delta !== void 0 ? `data-delta="${p.delta}"` : ""} ${p.action ? `data-action="${p.action}"` : ""}>${p.label}</button>`
   ).join("");
   elements.startPresets.querySelectorAll(".btn-preset").forEach((btn) => {
     btn.addEventListener("click", async () => {
@@ -339,7 +288,6 @@ function updateDurationDisplay() {
   }
   const valid = duration > 0 && start >= 0;
   elements.downloadBtn.disabled = !valid || !currentStream;
-  elements.downloadAllBtn.disabled = !currentStream;
 }
 function resetProgress() {
   elements.progressContainer.classList.add("hidden");
@@ -365,7 +313,6 @@ function showProgress(progress) {
     elements.errorMessage.textContent = progress.error || "\u30C0\u30A6\u30F3\u30ED\u30FC\u30C9\u306B\u5931\u6557\u3057\u307E\u3057\u305F";
     elements.errorMessage.classList.remove("hidden");
     elements.downloadBtn.disabled = false;
-    elements.downloadAllBtn.disabled = false;
   }
   if (progress.stage === "complete") {
     setTimeout(() => {
@@ -378,41 +325,16 @@ function showError(message) {
   elements.errorMessage.textContent = message;
   elements.errorMessage.classList.remove("hidden");
   elements.downloadBtn.disabled = false;
-  elements.downloadAllBtn.disabled = false;
 }
 function renderStreamList() {
-  const streamList = elements.streamLists[activeTab];
-  streamList.innerHTML = "";
-  if (activeTab === "history") {
-    for (const item of history) {
-      const historyItem = document.createElement("div");
-      historyItem.className = "history-item";
-      const statusClass = item.status === "success" ? "success" : item.status === "failed" ? "failed" : "pending";
-      historyItem.innerHTML = `
-        <div class="history-item-header">
-          <div class="history-item-title">${escapeHtml(item.filename)}</div>
-          <span class="history-item-status ${statusClass}">${item.status === "success" ? "\u6210\u529F" : item.status === "failed" ? "\u5931\u6557" : "\u5F85\u6A5F\u4E2D"}</span>
-        </div>
-        <div class="history-item-meta">${new Date(item.timestamp).toLocaleString("ja-JP")} \xB7 ${(item.fileSize / 1024 / 1024).toFixed(1)} MB</div>
-        <div class="history-item-range">${formatTime(item.startTime)} - ${formatTime(item.endTime)}</div>
-        ${item.error ? `<div class="history-item-meta" style="color: #d93025;" title="${escapeHtml(item.error)}">\u30A8\u30E9\u30FC: ${escapeHtml(item.error.substring(0, 50))}...</div>` : ""}
-        <div class="history-item-actions">
-          <button class="btn btn-secondary history-redownload" data-id="${item.id}">\u518D\u30C0\u30A6\u30F3\u30ED\u30FC\u30C9</button>
-          <button class="btn btn-secondary history-delete" data-id="${item.id}">\u524A\u9664</button>
-        </div>
-      `;
-      historyItem.querySelector(".history-redownload")?.addEventListener("click", (e) => {
-        e.stopPropagation();
-        redownloadHistory(item.id);
-      });
-      historyItem.querySelector(".history-delete")?.addEventListener("click", (e) => {
-        e.stopPropagation();
-        deleteHistoryItem(item.id);
-      });
-      streamList.appendChild(historyItem);
-    }
+  elements.streams.innerHTML = "";
+  if (streams.length === 0) {
+    elements.emptyState.classList.remove("hidden");
+    elements.streams.classList.add("hidden");
     return;
   }
+  elements.emptyState.classList.add("hidden");
+  elements.streams.classList.remove("hidden");
   for (const stream of streams) {
     const item = document.createElement("div");
     item.className = "stream-item";
@@ -434,7 +356,7 @@ function renderStreamList() {
       e.stopPropagation();
       deleteStream(stream.id);
     });
-    streamList.appendChild(item);
+    elements.streams.appendChild(item);
   }
 }
 function escapeHtml(text) {
@@ -465,81 +387,13 @@ async function loadStreams() {
     });
   });
 }
-async function loadHistory() {
-  return new Promise((resolve) => {
-    chrome.runtime.sendMessage({ type: MessageType.GET_HISTORY }, (response) => {
-      if (response && response.type === MessageType.HISTORY_LIST) {
-        history = response.payload;
-        if (activeTab === "history") {
-          renderStreamList();
-        }
-      }
-      resolve();
-    });
-  });
-}
 function deleteStream(streamId) {
-  const stream = streams.find((s) => s.id === streamId);
-  if (!stream) return;
-  showConfirm(`\u300C${stream.tabTitle}\u300D\u3092\u524A\u9664\u3057\u307E\u3059\u304B\uFF1F`, async () => {
-    chrome.runtime.sendMessage({ type: MessageType.DELETE_STREAM, payload: { streamId } });
-    streams = streams.filter((s) => s.id !== streamId);
-    renderStreamList();
-    if (currentStream?.id === streamId) {
-      showStreamList();
-    }
-  });
-}
-function clearAllStreams() {
-  showConfirm("\u3059\u3079\u3066\u306E\u30B9\u30C8\u30EA\u30FC\u30E0\u3092\u524A\u9664\u3057\u307E\u3059\u304B\uFF1F\u3053\u306E\u64CD\u4F5C\u306F\u5143\u306B\u623B\u305B\u307E\u305B\u3093\u3002", async () => {
-    chrome.runtime.sendMessage({ type: MessageType.CLEAR_ALL_STREAMS });
-    streams = [];
-    currentStream = null;
-    renderStreamList();
+  chrome.runtime.sendMessage({ type: MessageType.DELETE_STREAM, payload: { streamId } });
+  streams = streams.filter((s) => s.id !== streamId);
+  renderStreamList();
+  if (currentStream?.id === streamId) {
     showStreamList();
-  });
-}
-function redownloadHistory(historyId) {
-  const item = history.find((h) => h.id === historyId);
-  if (!item) return;
-  const stream = streams.find((s) => s.id === item.streamId);
-  if (!stream) {
-    showError("\u30B9\u30C8\u30EA\u30FC\u30E0\u304C\u898B\u3064\u304B\u308A\u307E\u305B\u3093\u3002\u5C65\u6B74\u304B\u3089\u518D\u53D6\u5F97\u3057\u3066\u304F\u3060\u3055\u3044\u3002");
-    return;
   }
-  showStreamDetail(stream);
-  elements.startSeconds.value = item.startTime.toString();
-  elements.startHhmmss.value = formatTime(item.startTime);
-  elements.endSeconds.value = item.endTime.toString();
-  elements.endHhmmss.value = formatTime(item.endTime);
-  updateDurationDisplay();
-  if (elements.streamDetail.classList.contains("hidden")) {
-    elements.streamDetail.classList.remove("hidden");
-    elements.tabPanels.forEach((p) => p.classList.add("hidden"));
-  }
-}
-function deleteHistoryItem(historyId) {
-  showConfirm("\u3053\u306E\u5C65\u6B74\u9805\u76EE\u3092\u524A\u9664\u3057\u307E\u3059\u304B\uFF1F", () => {
-    chrome.runtime.sendMessage({ type: MessageType.DELETE_HISTORY, payload: { id: historyId } });
-    history = history.filter((h) => h.id !== historyId);
-    renderStreamList();
-  });
-}
-function showConfirm(message, callback) {
-  confirmCallback = callback;
-  elements.confirmMessage.textContent = message;
-  elements.confirmModal.classList.remove("hidden");
-  elements.confirmOk.focus();
-}
-function hideConfirm() {
-  elements.confirmModal.classList.add("hidden");
-  confirmCallback = null;
-}
-function showAbout() {
-  elements.aboutModal.classList.remove("hidden");
-}
-function hideAbout() {
-  elements.aboutModal.classList.add("hidden");
 }
 function updateStorageInfo() {
   if (navigator.storage && navigator.storage.estimate) {
@@ -548,18 +402,16 @@ function updateStorageInfo() {
       const quota = estimate.quota || 0;
       elements.storageInfo.textContent = `IndexedDB: ${(used / 1024 / 1024).toFixed(1)} MB / ${(quota / 1024 / 1024).toFixed(1)} MB`;
     }).catch(() => {
-      elements.storageInfo.textContent = "IndexedDB: N/A";
+      elements.storageInfo.textContent = "";
     });
   } else {
-    elements.storageInfo.textContent = "IndexedDB: N/A";
+    elements.storageInfo.textContent = "";
   }
 }
 function setVersion() {
   const manifest = chrome.runtime.getManifest();
   elements.version.textContent = manifest.version;
-  elements.modalVersion.textContent = manifest.version;
 }
-elements.clearAllBtn.addEventListener("click", clearAllStreams);
 elements.backBtn.addEventListener("click", () => {
   showStreamList();
 });
@@ -586,7 +438,6 @@ elements.downloadBtn.addEventListener("click", async () => {
   const outputFilename = elements.outputFilename.value.trim() || "video.mp4";
   const quality = elements.qualitySelect.value;
   elements.downloadBtn.disabled = true;
-  elements.downloadAllBtn.disabled = true;
   resetProgress();
   showProgress({ stage: "fetching", progress: 0, message: "\u30C0\u30A6\u30F3\u30ED\u30FC\u30C9\u3092\u6E96\u5099\u4E2D..." });
   chrome.runtime.sendMessage({
@@ -600,54 +451,6 @@ elements.downloadBtn.addEventListener("click", async () => {
     }
   });
 });
-elements.downloadAllBtn.addEventListener("click", async () => {
-  if (!currentStream) return;
-  const stream = currentStream;
-  showConfirm(`\u300C${stream.tabTitle}\u300D\u3092\u5168\u9577\u30C0\u30A6\u30F3\u30ED\u30FC\u30C9\u3057\u307E\u3059\u304B\uFF1F`, () => {
-    const duration = stream.duration || 0;
-    const outputFilename = elements.outputFilename.value.trim() || "video.mp4";
-    const quality = elements.qualitySelect.value;
-    elements.downloadBtn.disabled = true;
-    elements.downloadAllBtn.disabled = true;
-    resetProgress();
-    showProgress({ stage: "fetching", progress: 0, message: "\u30C0\u30A6\u30F3\u30ED\u30FC\u30C9\u3092\u6E96\u5099\u4E2D..." });
-    chrome.runtime.sendMessage({
-      type: MessageType.DOWNLOAD_STREAM,
-      payload: {
-        streamId: stream.id,
-        startTime: 0,
-        endTime: duration,
-        quality,
-        outputFilename
-      }
-    });
-  });
-});
-elements.tabs.forEach((tab) => {
-  tab.addEventListener("click", () => {
-    showTab(tab.dataset.tab);
-  });
-});
-elements.aboutBtn.addEventListener("click", showAbout);
-elements.confirmOk.addEventListener("click", () => {
-  if (confirmCallback) {
-    confirmCallback();
-  }
-  hideConfirm();
-});
-elements.confirmCancel.addEventListener("click", hideConfirm);
-elements.modalCloseButtons.forEach((btn) => {
-  btn.addEventListener("click", () => {
-    hideAbout();
-    hideConfirm();
-  });
-});
-elements.modalBackdrops.forEach((backdrop) => {
-  backdrop.addEventListener("click", () => {
-    hideAbout();
-    hideConfirm();
-  });
-});
 chrome.runtime.onMessage.addListener((message) => {
   if (message.type === MessageType.STREAM_CAPTURED) {
     const stream = message.payload;
@@ -657,12 +460,9 @@ chrome.runtime.onMessage.addListener((message) => {
     } else {
       streams.unshift(stream);
     }
-    if (activeTab === "streams") {
+    if (!currentStream) {
       renderStreamList();
-      elements.emptyStates.streams.classList.add("hidden");
-      elements.streamLists.streams.classList.remove("hidden");
-    }
-    if (currentStream?.id === stream.id) {
+    } else if (currentStream.id === stream.id) {
       showStreamDetail(stream);
     }
   }
@@ -676,27 +476,8 @@ chrome.runtime.onMessage.addListener((message) => {
     const error = message.payload?.error || "\u30C0\u30A6\u30F3\u30ED\u30FC\u30C9\u306B\u5931\u6557\u3057\u307E\u3057\u305F";
     showError(error);
   }
-  if (message.type === MessageType.RECORDING_STATE_CHANGE) {
-    const { streamId, state } = message.payload;
-    const stream = streams.find((s) => s.id === streamId);
-    if (stream) {
-      renderStreamList();
-      if (currentStream?.id === streamId) {
-        if (state === "stopped") {
-          showStreamList();
-        }
-      }
-    }
-  }
-  if (message.type === MessageType.HISTORY_LIST) {
-    history = message.payload;
-    if (activeTab === "history") {
-      renderStreamList();
-    }
-  }
 });
 loadStreams();
-loadHistory();
 setVersion();
 updateStorageInfo();
 setInterval(updateStorageInfo, 3e4);
