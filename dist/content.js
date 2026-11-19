@@ -53,7 +53,17 @@ function signalContentReady() {
   });
 }
 function findVideoElement() {
-  return document.querySelector("video");
+  const videos = Array.from(document.querySelectorAll("video"));
+  if (videos.length === 0) return null;
+  if (videos.length === 1) return videos[0];
+  const playing = videos.find((v) => !v.paused && !v.ended && v.readyState > 2);
+  if (playing) return playing;
+  const withTime = videos.filter((v) => v.currentTime > 0);
+  if (withTime.length > 0) {
+    return withTime.reduce((max, v) => v.currentTime > max.currentTime ? v : max, withTime[0]);
+  }
+  const visible = videos.find((v) => v.offsetWidth > 0 && v.offsetHeight > 0);
+  return visible || videos[0];
 }
 function getCurrentTime() {
   const video = findVideoElement();

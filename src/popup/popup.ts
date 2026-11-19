@@ -243,9 +243,10 @@ function renderPresets(stream: CapturedStream): void {
         chrome.runtime.sendMessage(
           { type: MessageType.GET_CURRENT_TIME, payload: { streamId: currentStream.id } },
           (response: Message | undefined) => {
-            const value = (response && response.type === MessageType.CURRENT_TIME_RESPONSE && response.payload)
+            const rawValue = (response && response.type === MessageType.CURRENT_TIME_RESPONSE && response.payload)
               ? (response.payload as CurrentTimeInfo).currentTime
               : parseFloat(btnEl.dataset.value || '0');
+            const value = Math.max(0, Math.floor(rawValue));
             elements.startSeconds.value = value.toString();
             elements.startHhmmss.value = formatTime(value);
             updateDurationDisplay();
@@ -288,9 +289,10 @@ function renderPresets(stream: CapturedStream): void {
         chrome.runtime.sendMessage(
           { type: MessageType.GET_CURRENT_TIME, payload: { streamId: currentStream.id } },
           (response: Message | undefined) => {
-            const value = (response && response.type === MessageType.CURRENT_TIME_RESPONSE && response.payload)
+            const rawValue = (response && response.type === MessageType.CURRENT_TIME_RESPONSE && response.payload)
               ? (response.payload as CurrentTimeInfo).currentTime
               : parseFloat(btnEl.dataset.value || duration.toString());
+            const value = Math.max(0, Math.floor(rawValue));
             elements.endSeconds.value = value.toString();
             elements.endHhmmss.value = formatTime(value);
             updateDurationDisplay();

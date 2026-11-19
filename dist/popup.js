@@ -53,16 +53,11 @@ function parseTimeInput(input) {
   throw new Error("Invalid time format. Use seconds, MM:SS, or HH:MM:SS");
 }
 function formatTime(seconds) {
-  const hours = Math.floor(seconds / 3600);
-  const minutes = Math.floor(seconds % 3600 / 60);
-  const secInt = Math.floor(seconds % 60);
-  const fraction = seconds - Math.floor(seconds);
-  const fracStr = fraction > 0.05 ? fraction.toFixed(1).substring(1).replace(/\.0$/, "") : "";
-  const secsFormatted = `${secInt.toString().padStart(2, "0")}${fracStr}`;
-  if (hours > 0) {
-    return `${hours.toString().padStart(2, "0")}:${minutes.toString().padStart(2, "0")}:${secsFormatted}`;
-  }
-  return `${minutes.toString().padStart(2, "0")}:${secsFormatted}`;
+  const rounded = Math.round(seconds);
+  const hours = Math.floor(rounded / 3600);
+  const minutes = Math.floor(rounded % 3600 / 60);
+  const secInt = Math.floor(rounded % 60);
+  return `${hours.toString().padStart(2, "0")}:${minutes.toString().padStart(2, "0")}:${secInt.toString().padStart(2, "0")}`;
 }
 function validateTimeRange(start, end, duration, isLive) {
   if (start < 0) {
@@ -287,7 +282,8 @@ function renderPresets(stream) {
         chrome.runtime.sendMessage(
           { type: MessageType.GET_CURRENT_TIME, payload: { streamId: currentStream.id } },
           (response) => {
-            const value2 = response && response.type === MessageType.CURRENT_TIME_RESPONSE && response.payload ? response.payload.currentTime : parseFloat(btnEl.dataset.value || "0");
+            const rawValue = response && response.type === MessageType.CURRENT_TIME_RESPONSE && response.payload ? response.payload.currentTime : parseFloat(btnEl.dataset.value || "0");
+            const value2 = Math.max(0, Math.floor(rawValue));
             elements.startSeconds.value = value2.toString();
             elements.startHhmmss.value = formatTime(value2);
             updateDurationDisplay();
@@ -327,7 +323,8 @@ function renderPresets(stream) {
         chrome.runtime.sendMessage(
           { type: MessageType.GET_CURRENT_TIME, payload: { streamId: currentStream.id } },
           (response) => {
-            const value2 = response && response.type === MessageType.CURRENT_TIME_RESPONSE && response.payload ? response.payload.currentTime : parseFloat(btnEl.dataset.value || duration.toString());
+            const rawValue = response && response.type === MessageType.CURRENT_TIME_RESPONSE && response.payload ? response.payload.currentTime : parseFloat(btnEl.dataset.value || duration.toString());
+            const value2 = Math.max(0, Math.floor(rawValue));
             elements.endSeconds.value = value2.toString();
             elements.endHhmmss.value = formatTime(value2);
             updateDurationDisplay();

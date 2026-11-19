@@ -25,7 +25,23 @@ function signalContentReady(): void {
 }
 
 function findVideoElement(): HTMLVideoElement | null {
-  return document.querySelector('video') as HTMLVideoElement | null;
+  const videos = Array.from(document.querySelectorAll('video')) as HTMLVideoElement[];
+  if (videos.length === 0) return null;
+  if (videos.length === 1) return videos[0];
+
+  // 再生中の動画を最優先
+  const playing = videos.find(v => !v.paused && !v.ended && v.readyState > 2);
+  if (playing) return playing;
+
+  // currentTime が進んでいる動画、あるいは duration がある動画
+  const withTime = videos.filter(v => v.currentTime > 0);
+  if (withTime.length > 0) {
+    return withTime.reduce((max, v) => (v.currentTime > max.currentTime ? v : max), withTime[0]);
+  }
+
+  // 表示されている動画
+  const visible = videos.find(v => v.offsetWidth > 0 && v.offsetHeight > 0);
+  return visible || videos[0];
 }
 
 function getCurrentTime(): { currentTime: number; duration: number } | null {
