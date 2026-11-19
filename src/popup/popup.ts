@@ -24,7 +24,6 @@ const elements = {
   },
   streamDetail: document.getElementById('stream-detail')!,
   backBtn: document.getElementById('back-btn') as HTMLButtonElement,
-  refreshBtn: document.getElementById('refresh-btn') as HTMLButtonElement,
   clearAllBtn: document.getElementById('clear-all-btn') as HTMLButtonElement,
   streamTitle: document.getElementById('stream-title')!,
   streamUrl: document.getElementById('stream-url')!,
@@ -596,9 +595,6 @@ function setVersion(): void {
   elements.modalVersion.textContent = manifest.version;
 }
 
-elements.refreshBtn.addEventListener('click', () => {
-  loadStreams();
-});
 
 elements.clearAllBtn.addEventListener('click', clearAllStreams);
 
@@ -637,6 +633,7 @@ elements.downloadBtn.addEventListener('click', async () => {
   elements.downloadBtn.disabled = true;
   elements.downloadAllBtn.disabled = true;
   resetProgress();
+  showProgress({ stage: 'fetching', progress: 0, message: 'ダウンロードを準備中...' });
   
   chrome.runtime.sendMessage({
     type: MessageType.DOWNLOAD_STREAM,
@@ -662,6 +659,7 @@ elements.downloadAllBtn.addEventListener('click', async () => {
     elements.downloadBtn.disabled = true;
     elements.downloadAllBtn.disabled = true;
     resetProgress();
+    showProgress({ stage: 'fetching', progress: 0, message: 'ダウンロードを準備中...' });
     
     chrome.runtime.sendMessage({
       type: MessageType.DOWNLOAD_STREAM,

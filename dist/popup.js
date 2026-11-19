@@ -18,7 +18,9 @@ var MessageType = {
   CLEAR_ALL_STREAMS: "CLEAR_ALL_STREAMS",
   GET_HISTORY: "GET_HISTORY",
   HISTORY_LIST: "HISTORY_LIST",
-  DELETE_HISTORY: "DELETE_HISTORY"
+  DELETE_HISTORY: "DELETE_HISTORY",
+  OFFSCREEN_READY: "OFFSCREEN_READY",
+  CHECK_OFFSCREEN: "CHECK_OFFSCREEN"
 };
 
 // src/shared/time.ts
@@ -95,7 +97,6 @@ var elements = {
   },
   streamDetail: document.getElementById("stream-detail"),
   backBtn: document.getElementById("back-btn"),
-  refreshBtn: document.getElementById("refresh-btn"),
   clearAllBtn: document.getElementById("clear-all-btn"),
   streamTitle: document.getElementById("stream-title"),
   streamUrl: document.getElementById("stream-url"),
@@ -576,9 +577,6 @@ function setVersion() {
   elements.version.textContent = manifest.version;
   elements.modalVersion.textContent = manifest.version;
 }
-elements.refreshBtn.addEventListener("click", () => {
-  loadStreams();
-});
 elements.clearAllBtn.addEventListener("click", clearAllStreams);
 elements.backBtn.addEventListener("click", () => {
   showStreamList();
