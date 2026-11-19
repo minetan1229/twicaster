@@ -42,9 +42,17 @@ describe('DiscordBot', () => {
       const names = commands.map((c) => c.name);
 
       expect(names).toContain('ping');
+      expect(names).toContain('sys');
+      expect(names).toContain('restart');
       expect(names).toContain('set_admin');
       expect(names).toContain('set_server');
       expect(names).toContain('set_4sim_api_key');
+      expect(names).toContain('bot_list_line');
+      expect(names).toContain('logout_line');
+      expect(names).toContain('create_group_id');
+      expect(names).toContain('change_group');
+      expect(names).toContain('del_group_id');
+      expect(names).toContain('create_line');
     });
 
     it('should handle /ping command', async () => {
@@ -81,7 +89,7 @@ describe('DiscordBot', () => {
       expect(replyMock).toHaveBeenCalledWith(
         expect.objectContaining({
           content: expect.stringContaining('管理者'),
-          ephemeral: false,
+          ephemeral: true,
         })
       );
 
@@ -112,7 +120,7 @@ describe('DiscordBot', () => {
       expect(replyMock).toHaveBeenCalledWith(
         expect.objectContaining({
           content: expect.stringContaining('Test Guild'),
-          ephemeral: false,
+          ephemeral: true,
         })
       );
     });
@@ -137,12 +145,297 @@ describe('DiscordBot', () => {
       expect(replyMock).toHaveBeenCalledWith(
         expect.objectContaining({
           content: expect.stringContaining('4sim.net APIキーを登録しました'),
-          ephemeral: false,
+          ephemeral: true,
         })
       );
 
       const updated = await store.loadConfig();
       expect(updated.fourSimApiKey).toBe('test-api-key-1234');
+    });
+
+    it('should handle /sys command', async () => {
+      const bot = new DiscordBot({ store });
+      const replyMock = vi.fn();
+      const interaction = {
+        commandName: 'sys',
+        user: { id: 'u1' },
+        reply: replyMock,
+      } as unknown as ChatInputCommandInteraction;
+
+      await bot.handleCommand(interaction);
+      expect(replyMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          content: expect.stringContaining('システムステータス'),
+          ephemeral: true,
+        })
+      );
+    });
+
+    it('should handle /restart command with permissions', async () => {
+      const config = await store.loadConfig();
+      config.adminUserIds.push('admin1');
+      await store.saveConfig(config);
+
+      const bot = new DiscordBot({ store });
+      const replyMock = vi.fn();
+
+      // 非管理者
+      const nonAdminInteraction = {
+        commandName: 'restart',
+        user: { id: 'user_regular' },
+        reply: replyMock,
+      } as unknown as ChatInputCommandInteraction;
+      await bot.handleCommand(nonAdminInteraction);
+      expect(replyMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          content: expect.stringContaining('管理者権限がありません'),
+          ephemeral: true,
+        })
+      );
+
+      // 管理者
+      replyMock.mockClear();
+      const adminInteraction = {
+        commandName: 'restart',
+        user: { id: 'admin1' },
+        reply: replyMock,
+      } as unknown as ChatInputCommandInteraction;
+      await bot.handleCommand(adminInteraction);
+      expect(replyMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          content: expect.stringContaining('Botを再起動します'),
+          ephemeral: true,
+        })
+      );
+    });
+
+    it('should handle /bot_list_line command', async () => {
+      const config = await store.loadConfig();
+      config.adminUserIds.push('admin1');
+      await store.saveConfig(config);
+
+      const bot = new DiscordBot({ store });
+      const replyMock = vi.fn();
+
+      // 0件の時
+      const interactionEmpty = {
+        commandName: 'bot_list_line',
+        user: { id: 'admin1' },
+        reply: replyMock,
+      } as unknown as ChatInputCommandInteraction;
+      await bot.handleCommand(interactionEmpty);
+      expect(replyMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          content: expect.stringContaining('登録されているLINEアカウントはありません'),
+          ephemeral: true,
+        })
+      );
+
+      // アカウントが存在する時
+      await store.saveAccounts({
+        uuid1: {
+          mid: 'mid1',
+          account: {
+            token: 'tok1',
+            ip: '127.0.0.1',
+            logincount: 1,
+            last_login_time: '2026-11-19T00:00:00Z',
+            first_login_name: 'bot1',
+          },
+          group_id: 'grp1',
+          status: 'active',
+          type: 'bot',
+        },
+      });
+
+      replyMock.mockClear();
+      await bot.handleCommand(interactionEmpty);
+      expect(replyMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          content: expect.stringContaining('uuid1'),
+          ephemeral: true,
+        })
+      );
+    });
+
+    it('should handle /logout_line command', async () => {
+      const config = await store.loadConfig();
+      config.adminUserIds.push('admin1');
+      await store.saveConfig(config);
+
+      await store.saveAccounts({
+        uuid1: {
+          mid: 'mid1',
+          account: {
+            token: 'tok1',
+            ip: '127.0.0.1',
+            logincount: 1,
+            last_login_time: '2026-11-19T00:00:00Z',
+            first_login_name: 'bot1',
+          },
+          group_id: 'grp1',
+          status: 'active',
+          type: 'bot',
+        },
+      });
+
+      const bot = new DiscordBot({ store });
+      const replyMock = vi.fn();
+      const interaction = {
+        commandName: 'logout_line',
+        user: { id: 'admin1' },
+        options: {
+          getString: vi.fn().mockReturnValue('uuid1'),
+        },
+        reply: replyMock,
+      } as unknown as ChatInputCommandInteraction;
+
+      await bot.handleCommand(interaction);
+      expect(replyMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          content: expect.stringContaining('ログアウト'),
+          ephemeral: true,
+        })
+      );
+
+      const accounts = await store.loadAccounts();
+      expect(accounts.uuid1.status).toBe('sleep');
+    });
+
+    it('should handle /create_group_id, /change_group, /del_group_id commands', async () => {
+      const config = await store.loadConfig();
+      config.adminUserIds.push('admin1');
+      await store.saveConfig(config);
+
+      await store.saveAccounts({
+        uuid1: {
+          mid: 'mid1',
+          account: {
+            token: 'tok1',
+            ip: '127.0.0.1',
+            logincount: 1,
+            last_login_time: '2026-11-19T00:00:00Z',
+            first_login_name: 'bot1',
+          },
+          group_id: '',
+          status: 'active',
+          type: 'bot',
+        },
+      });
+
+      const bot = new DiscordBot({ store });
+      const replyMock = vi.fn();
+
+      // create_group_id
+      const createGroupInteraction = {
+        commandName: 'create_group_id',
+        user: { id: 'admin1' },
+        options: {
+          getString: vi.fn((key: string) => {
+            if (key === 'group_id') return 'gid-100';
+            if (key === 'name') return 'Group 100';
+            return null;
+          }),
+        },
+        reply: replyMock,
+      } as unknown as ChatInputCommandInteraction;
+
+      await bot.handleCommand(createGroupInteraction);
+      expect(replyMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          content: expect.stringContaining('Group 100'),
+          ephemeral: true,
+        })
+      );
+
+      const groups = await store.loadGroups();
+      expect(groups['gid-100']).toBeDefined();
+
+      // change_group
+      replyMock.mockClear();
+      const changeGroupInteraction = {
+        commandName: 'change_group',
+        user: { id: 'admin1' },
+        options: {
+          getString: vi.fn((key: string) => {
+            if (key === 'uuid') return 'uuid1';
+            if (key === 'group_id') return 'gid-100';
+            return null;
+          }),
+        },
+        reply: replyMock,
+      } as unknown as ChatInputCommandInteraction;
+
+      await bot.handleCommand(changeGroupInteraction);
+      expect(replyMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          content: expect.stringContaining('gid-100'),
+          ephemeral: true,
+        })
+      );
+
+      const accounts = await store.loadAccounts();
+      expect(accounts.uuid1.group_id).toBe('gid-100');
+
+      // del_group_id
+      replyMock.mockClear();
+      const delGroupInteraction = {
+        commandName: 'del_group_id',
+        user: { id: 'admin1' },
+        options: {
+          getString: vi.fn().mockReturnValue('gid-100'),
+        },
+        reply: replyMock,
+      } as unknown as ChatInputCommandInteraction;
+
+      await bot.handleCommand(delGroupInteraction);
+      expect(replyMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          content: expect.stringContaining('削除しました'),
+          ephemeral: true,
+        })
+      );
+
+      const groupsAfter = await store.loadGroups();
+      expect(groupsAfter['gid-100']).toBeUndefined();
+    });
+
+    it('should handle /create_line command with 4sim API', async () => {
+      const config = await store.loadConfig();
+      config.adminUserIds.push('admin1');
+      config.fourSimApiKey = 'test-key';
+      await store.saveConfig(config);
+
+      const bot = new DiscordBot({ store });
+      const replyMock = vi.fn();
+
+      // fetch をモック
+      const originalFetch = global.fetch;
+      global.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({ id: 99999, number: '+66912345678' }),
+      } as unknown as Response);
+
+      const interaction = {
+        commandName: 'create_line',
+        user: { id: 'admin1' },
+        options: {
+          getString: vi.fn().mockReturnValue('thailand'),
+        },
+        reply: replyMock,
+      } as unknown as ChatInputCommandInteraction;
+
+      try {
+        await bot.handleCommand(interaction);
+        expect(replyMock).toHaveBeenCalledWith(
+          expect.objectContaining({
+            content: expect.stringContaining('+66912345678'),
+            ephemeral: true,
+          })
+        );
+      } finally {
+        global.fetch = originalFetch;
+      }
     });
   });
 
