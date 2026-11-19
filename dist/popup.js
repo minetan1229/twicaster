@@ -606,6 +606,7 @@ elements.downloadBtn.addEventListener("click", async () => {
   elements.downloadBtn.disabled = true;
   elements.downloadAllBtn.disabled = true;
   resetProgress();
+  showProgress({ stage: "fetching", progress: 0, message: "\u30C0\u30A6\u30F3\u30ED\u30FC\u30C9\u3092\u6E96\u5099\u4E2D..." });
   chrome.runtime.sendMessage({
     type: MessageType.DOWNLOAD_STREAM,
     payload: {
@@ -627,6 +628,7 @@ elements.downloadAllBtn.addEventListener("click", async () => {
     elements.downloadBtn.disabled = true;
     elements.downloadAllBtn.disabled = true;
     resetProgress();
+    showProgress({ stage: "fetching", progress: 0, message: "\u30C0\u30A6\u30F3\u30ED\u30FC\u30C9\u3092\u6E96\u5099\u4E2D..." });
     chrome.runtime.sendMessage({
       type: MessageType.DOWNLOAD_STREAM,
       payload: {

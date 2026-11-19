@@ -18,7 +18,9 @@ var MessageType = {
   CLEAR_ALL_STREAMS: "CLEAR_ALL_STREAMS",
   GET_HISTORY: "GET_HISTORY",
   HISTORY_LIST: "HISTORY_LIST",
-  DELETE_HISTORY: "DELETE_HISTORY"
+  DELETE_HISTORY: "DELETE_HISTORY",
+  OFFSCREEN_READY: "OFFSCREEN_READY",
+  CHECK_OFFSCREEN: "CHECK_OFFSCREEN"
 };
 
 // src/shared/headers.ts
@@ -363,6 +365,49 @@ async function deleteHistoryEntry(id) {
   const filtered = history.filter((h) => h.id !== id);
   await saveHistory(filtered);
 }
+var creatingOffscreenPromise = null;
+async function ensureOffscreenDocument() {
+  const existingContexts = await chrome.runtime.getContexts({
+    contextTypes: [chrome.runtime.ContextType.OFFSCREEN_DOCUMENT]
+  });
+  if (existingContexts.length > 0) {
+    return;
+  }
+  if (creatingOffscreenPromise) {
+    await creatingOffscreenPromise;
+    return;
+  }
+  creatingOffscreenPromise = new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      chrome.runtime.onMessage.removeListener(readyListener);
+      reject(new Error("Offscreen document ready timeout"));
+    }, 15e3);
+    const readyListener = (msg) => {
+      if (msg.type === MessageType.OFFSCREEN_READY) {
+        clearTimeout(timeout);
+        chrome.runtime.onMessage.removeListener(readyListener);
+        resolve();
+      }
+    };
+    chrome.runtime.onMessage.addListener(readyListener);
+    chrome.offscreen.createDocument({
+      url: "offscreen.html",
+      reasons: ["AUDIO_PLAYBACK", "CLIPBOARD"],
+      justification: "Required for FFmpeg.wasm video processing"
+    }).catch((err) => {
+      clearTimeout(timeout);
+      chrome.runtime.onMessage.removeListener(readyListener);
+      if (err.message && err.message.includes("Only a single offscreen document may be created")) {
+        resolve();
+      } else {
+        reject(err);
+      }
+    });
+  }).finally(() => {
+    creatingOffscreenPromise = null;
+  });
+  await creatingOffscreenPromise;
+}
 chrome.debugger.onEvent.addListener(async (source, method, params) => {
   const tabId = source.tabId;
   if (!params || tabId === void 0) return;
@@ -479,29 +524,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       return true;
     }
     const controller = new AbortController();
-    addHistoryEntry({
-      streamId,
-      filename: outputFilename,
-      startTime,
-      endTime,
-      fileSize: 0
-    }).then((historyEntry) => {
-      chrome.runtime.sendMessage({
-        type: MessageType.DOWNLOAD_STREAM,
-        payload: {
-          streamId,
-          masterUrl: stream.masterUrl,
-          headers: stream.headers,
-          startTime,
-          endTime,
-          quality,
-          outputFilename,
-          isLive: stream.type === "live",
-          variants: stream.variants,
-          historyId: historyEntry.id
-        }
-      });
-    });
     if (stream.type === "live") {
       recordingStates.set(streamId, { controller, startTime: Date.now() });
       chrome.runtime.sendMessage({
@@ -509,14 +531,40 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         payload: { streamId, state: "recording" }
       });
     }
-    chrome.offscreen.createDocument({
-      url: "offscreen.html",
-      reasons: ["AUDIO_PLAYBACK", "CLIPBOARD"],
-      justification: "Required for FFmpeg.wasm video processing"
-    }).catch((error) => {
-      sendResponse({ type: MessageType.DOWNLOAD_ERROR, payload: { error: error.message } });
-      recordingStates.delete(streamId);
-    });
+    (async () => {
+      try {
+        await ensureOffscreenDocument();
+        const historyEntry = await addHistoryEntry({
+          streamId,
+          filename: outputFilename,
+          startTime,
+          endTime,
+          fileSize: 0
+        });
+        chrome.runtime.sendMessage({
+          type: MessageType.DOWNLOAD_STREAM,
+          payload: {
+            streamId,
+            masterUrl: stream.masterUrl,
+            headers: stream.headers,
+            startTime,
+            endTime,
+            quality,
+            outputFilename,
+            isLive: stream.type === "live",
+            variants: stream.variants,
+            historyId: historyEntry.id
+          }
+        });
+      } catch (error) {
+        recordingStates.delete(streamId);
+        const errMsg = error instanceof Error ? error.message : "\u30AA\u30D5\u30B9\u30AF\u30EA\u30FC\u30F3\u30C9\u30AD\u30E5\u30E1\u30F3\u30C8\u306E\u521D\u671F\u5316\u306B\u5931\u6557\u3057\u307E\u3057\u305F";
+        chrome.runtime.sendMessage({
+          type: MessageType.DOWNLOAD_ERROR,
+          payload: { streamId, error: errMsg }
+        });
+      }
+    })();
     return true;
   }
   if (message.type === MessageType.DOWNLOAD_COMPLETE) {

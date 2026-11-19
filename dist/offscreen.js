@@ -334,7 +334,9 @@ var MessageType = {
   CLEAR_ALL_STREAMS: "CLEAR_ALL_STREAMS",
   GET_HISTORY: "GET_HISTORY",
   HISTORY_LIST: "HISTORY_LIST",
-  DELETE_HISTORY: "DELETE_HISTORY"
+  DELETE_HISTORY: "DELETE_HISTORY",
+  OFFSCREEN_READY: "OFFSCREEN_READY",
+  CHECK_OFFSCREEN: "CHECK_OFFSCREEN"
 };
 
 // src/shared/hls.ts
@@ -519,6 +521,8 @@ function buildRequestHeaders(stream, url) {
 // src/offscreen/offscreen.ts
 var ffmpeg = null;
 var ffmpegLoaded = false;
+chrome.runtime.sendMessage({ type: MessageType.OFFSCREEN_READY }).catch(() => {
+});
 var activeDownloads = /* @__PURE__ */ new Map();
 var MAX_PARALLEL_DOWNLOADS = 3;
 var MAX_RETRIES = 3;
@@ -915,6 +919,10 @@ chrome.runtime.onMessage.addListener(async (message) => {
       controller.abort();
       activeDownloads.delete(streamId);
     }
+  }
+  if (message.type === MessageType.CHECK_OFFSCREEN) {
+    chrome.runtime.sendMessage({ type: MessageType.OFFSCREEN_READY }).catch(() => {
+    });
   }
 });
 console.log("\u30AA\u30D5\u30B9\u30AF\u30EA\u30FC\u30F3\u30C9\u30AD\u30E5\u30E1\u30F3\u30C8\u304C\u8AAD\u307F\u8FBC\u307E\u308C\u307E\u3057\u305F");

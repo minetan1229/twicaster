@@ -138,6 +138,8 @@ export const MessageType = {
   GET_HISTORY: 'GET_HISTORY',
   HISTORY_LIST: 'HISTORY_LIST',
   DELETE_HISTORY: 'DELETE_HISTORY',
+  OFFSCREEN_READY: 'OFFSCREEN_READY',
+  CHECK_OFFSCREEN: 'CHECK_OFFSCREEN',
 } as const;
 
 export type MessageTypeValue = typeof MessageType[keyof typeof MessageType];

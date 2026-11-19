@@ -6,6 +6,9 @@ import { buildRequestHeaders } from '../shared/headers';
 let ffmpeg: FFmpeg | null = null;
 let ffmpegLoaded = false;
 
+// Notify background that offscreen document is ready to receive messages
+chrome.runtime.sendMessage({ type: MessageType.OFFSCREEN_READY }).catch(() => {});
+
 const activeDownloads = new Map<string, AbortController>();
 
 const MAX_PARALLEL_DOWNLOADS = 3;
@@ -511,6 +514,10 @@ chrome.runtime.onMessage.addListener(async (message: { type: string; payload?: u
       controller.abort();
       activeDownloads.delete(streamId);
     }
+  }
+
+  if (message.type === MessageType.CHECK_OFFSCREEN) {
+    chrome.runtime.sendMessage({ type: MessageType.OFFSCREEN_READY }).catch(() => {});
   }
 });
 

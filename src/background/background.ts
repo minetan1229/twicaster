@@ -192,6 +192,58 @@ async function deleteHistoryEntry(id: string): Promise<void> {
   await saveHistory(filtered);
 }
 
+let creatingOffscreenPromise: Promise<void> | null = null;
+
+async function ensureOffscreenDocument(): Promise<void> {
+  // Check if offscreen document already exists
+  const existingContexts = await chrome.runtime.getContexts({
+    contextTypes: [chrome.runtime.ContextType.OFFSCREEN_DOCUMENT],
+  });
+  if (existingContexts.length > 0) {
+    return;
+  }
+
+  if (creatingOffscreenPromise) {
+    await creatingOffscreenPromise;
+    return;
+  }
+
+  creatingOffscreenPromise = new Promise<void>((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      chrome.runtime.onMessage.removeListener(readyListener);
+      reject(new Error('Offscreen document ready timeout'));
+    }, 15000);
+
+    const readyListener = (msg: Message) => {
+      if (msg.type === MessageType.OFFSCREEN_READY) {
+        clearTimeout(timeout);
+        chrome.runtime.onMessage.removeListener(readyListener);
+        resolve();
+      }
+    };
+    chrome.runtime.onMessage.addListener(readyListener);
+
+    chrome.offscreen.createDocument({
+      url: 'offscreen.html',
+      reasons: ['AUDIO_PLAYBACK', 'CLIPBOARD'] as chrome.offscreen.Reason[],
+      justification: 'Required for FFmpeg.wasm video processing',
+    }).catch(err => {
+      clearTimeout(timeout);
+      chrome.runtime.onMessage.removeListener(readyListener);
+      // If document was created in the meantime, treat as success
+      if (err.message && err.message.includes('Only a single offscreen document may be created')) {
+        resolve();
+      } else {
+        reject(err);
+      }
+    });
+  }).finally(() => {
+    creatingOffscreenPromise = null;
+  });
+
+  await creatingOffscreenPromise;
+}
+
 chrome.debugger.onEvent.addListener(async (source, method, params?: object) => {
   const tabId = source.tabId;
   
@@ -341,32 +393,6 @@ chrome.runtime.onMessage.addListener((message: Message, sender, sendResponse) =>
     
     const controller = new AbortController();
     
-    // Add history entry with pending status
-    addHistoryEntry({
-      streamId,
-      filename: outputFilename,
-      startTime,
-      endTime,
-      fileSize: 0,
-    }).then(historyEntry => {
-      // Send history ID to offscreen so it can update on completion
-      chrome.runtime.sendMessage({
-        type: MessageType.DOWNLOAD_STREAM,
-        payload: {
-          streamId,
-          masterUrl: stream.masterUrl,
-          headers: stream.headers,
-          startTime,
-          endTime,
-          quality,
-          outputFilename,
-          isLive: stream.type === 'live',
-          variants: stream.variants,
-          historyId: historyEntry.id,
-        },
-      });
-    });
-    
     if (stream.type === 'live') {
       recordingStates.set(streamId, { controller, startTime: Date.now() });
       chrome.runtime.sendMessage({
@@ -374,15 +400,42 @@ chrome.runtime.onMessage.addListener((message: Message, sender, sendResponse) =>
         payload: { streamId, state: 'recording' },
       });
     }
-    
-    chrome.offscreen.createDocument({
-      url: 'offscreen.html',
-      reasons: ['AUDIO_PLAYBACK', 'CLIPBOARD'] as chrome.offscreen.Reason[],
-      justification: 'Required for FFmpeg.wasm video processing',
-    }).catch((error) => {
-      sendResponse({ type: MessageType.DOWNLOAD_ERROR, payload: { error: error.message } });
-      recordingStates.delete(streamId);
-    });
+
+    (async () => {
+      try {
+        await ensureOffscreenDocument();
+        const historyEntry = await addHistoryEntry({
+          streamId,
+          filename: outputFilename,
+          startTime,
+          endTime,
+          fileSize: 0,
+        });
+
+        chrome.runtime.sendMessage({
+          type: MessageType.DOWNLOAD_STREAM,
+          payload: {
+            streamId,
+            masterUrl: stream.masterUrl,
+            headers: stream.headers,
+            startTime,
+            endTime,
+            quality,
+            outputFilename,
+            isLive: stream.type === 'live',
+            variants: stream.variants,
+            historyId: historyEntry.id,
+          },
+        });
+      } catch (error) {
+        recordingStates.delete(streamId);
+        const errMsg = error instanceof Error ? error.message : 'オフスクリーンドキュメントの初期化に失敗しました';
+        chrome.runtime.sendMessage({
+          type: MessageType.DOWNLOAD_ERROR,
+          payload: { streamId, error: errMsg },
+        });
+      }
+    })();
     
     return true;
   }
