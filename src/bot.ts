@@ -6,6 +6,8 @@ import {
   Events,
   SlashCommandBuilder,
   ChatInputCommandInteraction,
+  AutocompleteInteraction,
+  EmbedBuilder,
   REST,
   Routes,
 } from 'discord.js';
@@ -63,11 +65,17 @@ export class DiscordBot {
   public getSlashCommandDefinitions() {
     return [
       new SlashCommandBuilder()
+        .setName('help')
+        .setDescription('利用可能なコマンド一覧と使い方の説明を表示します'),
+      new SlashCommandBuilder()
         .setName('ping')
         .setDescription('Botの応答速度を確認します'),
       new SlashCommandBuilder()
         .setName('sys')
         .setDescription('システムの稼働ステータスおよび統計情報を表示します'),
+      new SlashCommandBuilder()
+        .setName('tree')
+        .setDescription('LINEグループおよび所属アカウントのツリー構造を可視化します'),
       new SlashCommandBuilder()
         .setName('restart')
         .setDescription('Botを再起動します（管理者専用）'),
@@ -99,7 +107,11 @@ export class DiscordBot {
         .setName('logout_line')
         .setDescription('LINEアカウントをログアウトします（管理者専用）')
         .addStringOption((opt) =>
-          opt.setName('uuid').setDescription('対象アカウントのUUID').setRequired(true)
+          opt
+            .setName('uuid')
+            .setDescription('対象アカウントのUUID')
+            .setRequired(true)
+            .setAutocomplete(true)
         ),
       new SlashCommandBuilder()
         .setName('create_group_id')
@@ -117,16 +129,28 @@ export class DiscordBot {
         .setName('change_group')
         .setDescription('LINEアカウントの所属グループを変更します')
         .addStringOption((opt) =>
-          opt.setName('uuid').setDescription('対象アカウントのUUID').setRequired(true)
+          opt
+            .setName('uuid')
+            .setDescription('対象アカウントのUUID')
+            .setRequired(true)
+            .setAutocomplete(true)
         )
         .addStringOption((opt) =>
-          opt.setName('group_id').setDescription('変更先のグループID').setRequired(true)
+          opt
+            .setName('group_id')
+            .setDescription('変更先のグループID')
+            .setRequired(true)
+            .setAutocomplete(true)
         ),
       new SlashCommandBuilder()
         .setName('del_group_id')
         .setDescription('登録済みLINEグループを削除します（管理者専用）')
         .addStringOption((opt) =>
-          opt.setName('group_id').setDescription('削除するグループID').setRequired(true)
+          opt
+            .setName('group_id')
+            .setDescription('削除するグループID')
+            .setRequired(true)
+            .setAutocomplete(true)
         ),
       new SlashCommandBuilder()
         .setName('create_line')
@@ -143,9 +167,56 @@ export class DiscordBot {
     });
 
     this.client.on(Events.InteractionCreate, async (interaction) => {
+      if (interaction.isAutocomplete()) {
+        await this.handleAutocomplete(interaction);
+        return;
+      }
       if (!interaction.isChatInputCommand()) return;
       await this.handleCommand(interaction);
     });
+  }
+
+  public async handleAutocomplete(interaction: AutocompleteInteraction): Promise<void> {
+    try {
+      const focusedOption = interaction.options.getFocused(true);
+      const query = focusedOption.value.toLowerCase();
+
+      if (focusedOption.name === 'uuid') {
+        const accounts = await this.store.loadAccounts();
+        const choices = Object.entries(accounts)
+          .filter(([uuid, acc]) => {
+            const label = `${uuid} ${acc.account.first_login_name || ''}`;
+            return label.toLowerCase().includes(query);
+          })
+          .slice(0, 25)
+          .map(([uuid, acc]) => ({
+            name: `${acc.account.first_login_name || '名称未設定'} (${uuid})`.slice(0, 100),
+            value: uuid,
+          }));
+        await interaction.respond(choices);
+        return;
+      }
+
+      if (focusedOption.name === 'group_id') {
+        const groups = await this.store.loadGroups();
+        const choices = Object.entries(groups)
+          .filter(([gid, grp]) => {
+            const label = `${gid} ${grp.name}`;
+            return label.toLowerCase().includes(query);
+          })
+          .slice(0, 25)
+          .map(([gid, grp]) => ({
+            name: `${grp.name} (${gid})`.slice(0, 100),
+            value: gid,
+          }));
+        await interaction.respond(choices);
+        return;
+      }
+
+      await interaction.respond([]);
+    } catch (err) {
+      console.error('[DiscordBot] Autocomplete処理中にエラーが発生しました:', err);
+    }
   }
 
   public async registerCommands(token: string, clientId: string, guildId?: string): Promise<void> {
@@ -165,6 +236,52 @@ export class DiscordBot {
     const { commandName, user, guildId } = interaction;
 
     try {
+      if (commandName === 'help') {
+        const embed = new EmbedBuilder()
+          .setTitle('📖 Discord - LINE Bot コマンド一覧')
+          .setDescription(
+            '実行可能なすべてのスラッシュコマンドです。各コマンドの応答はすべて実行者のみに表示される安全なEphemeralメッセージです。'
+          )
+          .setColor(0x00b900)
+          .addFields(
+            {
+              name: '⚙️ システム・基本コマンド',
+              value: [
+                '`/help` - コマンド一覧とヘルプを表示します（全員）',
+                '`/ping` - Botの応答速度・WebSocket Pingを確認します（全員）',
+                '`/sys` - システム稼働状況・統計情報を確認します（全員）',
+                '`/restart` - Botを再起動します（管理者専用）',
+              ].join('\n'),
+            },
+            {
+              name: '🛡️ 権限・サーバー設定コマンド',
+              value: [
+                '`/set_admin <target>` - 新しい管理者を追加設定します（管理者専用 / 初回自由）',
+                '`/set_server <server_name> <ob_user>` - サーバーと担当OBユーザーを紐付け登録します（管理者 / OB専用）',
+                '`/set_4sim_api_key <api_key>` - 4sim.netのAPIキーを設定します（管理者専用）',
+              ].join('\n'),
+            },
+            {
+              name: '👥 LINEグループ & アカウント管理コマンド',
+              value: [
+                '`/tree` - グループとアカウントの所属ツリーを可視化します（管理者 / OB専用）',
+                '`/bot_list_line` - 登録済みLINEアカウント一覧を表示します（管理者 / OB専用）',
+                '`/create_line [country]` - 4sim.netでLINE作成用電話番号を発行します（管理者 / OB専用）',
+                '`/create_group_id <group_id> <name> [ob_mid]` - 新しいLINEグループを登録します（管理者 / OB専用）',
+                '`/change_group <uuid> <group_id>` - アカウントの所属グループを変更します（管理者 / OB専用）',
+                '`/logout_line <uuid>` - 指定アカウントをログアウト/スリープにします（管理者専用）',
+                '`/del_group_id <group_id>` - LINEグループの登録を削除します（管理者専用）',
+              ].join('\n'),
+            }
+          )
+          .setFooter({
+            text: '※ アカウントUUIDやグループIDの入力欄では便利な自動補完（Autocomplete）が利用できます。',
+          });
+
+        await interaction.reply({ embeds: [embed], ephemeral: true });
+        return;
+      }
+
       if (commandName === 'ping') {
         const ping = this.client.ws.ping;
         await interaction.reply({
@@ -191,6 +308,76 @@ export class DiscordBot {
         ].join('\n');
 
         await interaction.reply({ content: msg, ephemeral: true });
+        return;
+      }
+
+      if (commandName === 'tree') {
+        const canExec = await this.permissions.canExecute(user.id, guildId || undefined);
+        if (!canExec) {
+          await interaction.reply({ content: 'このコマンドを実行する権限がありません。', ephemeral: true });
+          return;
+        }
+
+        const groups = await this.store.loadGroups();
+        const accounts = await this.store.loadAccounts();
+
+        const groupAccounts: Record<string, Array<{ uuid: string; data: (typeof accounts)[string] }>> = {};
+        const unassignedAccounts: Array<{ uuid: string; data: (typeof accounts)[string] }> = [];
+
+        for (const gid of Object.keys(groups)) {
+          groupAccounts[gid] = [];
+        }
+
+        for (const [uuid, acc] of Object.entries(accounts)) {
+          if (acc.group_id && groupAccounts[acc.group_id]) {
+            groupAccounts[acc.group_id].push({ uuid, data: acc });
+          } else {
+            unassignedAccounts.push({ uuid, data: acc });
+          }
+        }
+
+        const lines: string[] = ['📦 **LINEグループ & アカウント構成ツリー**', '```text'];
+        const groupEntries = Object.entries(groups);
+
+        if (groupEntries.length === 0 && unassignedAccounts.length === 0) {
+          lines.push('（登録されているグループおよびアカウントはありません）');
+        } else {
+          groupEntries.forEach(([gid, grp], gIdx) => {
+            const isLastGroup = gIdx === groupEntries.length - 1 && unassignedAccounts.length === 0;
+            const gPrefix = isLastGroup ? '┗━' : '┣━';
+            const cPrefix = isLastGroup ? '    ' : '┃   ';
+            lines.push(`${gPrefix} 🏢 グループ: ${grp.name} [ID: ${gid}] (OB: ${grp.ob_mid || 'なし'})`);
+
+            const accs = groupAccounts[gid] || [];
+            if (accs.length === 0) {
+              lines.push(`${cPrefix}┗━ (所属アカウントなし)`);
+            } else {
+              accs.forEach((item, aIdx) => {
+                const isLastAcc = aIdx === accs.length - 1;
+                const aPrefix = isLastAcc ? '┗━' : '┣━';
+                const icon = item.data.type === 'bot' ? '🤖' : '👤';
+                lines.push(
+                  `${cPrefix}${aPrefix} ${icon} [${item.data.type}] ${item.data.account.first_login_name || '未設定'} (${item.data.status}) - MID: ${item.data.mid || 'なし'} (UUID: ${item.uuid})`
+                );
+              });
+            }
+          });
+
+          if (unassignedAccounts.length > 0) {
+            lines.push('┗━ 📁 未所属アカウント');
+            unassignedAccounts.forEach((item, uIdx) => {
+              const isLastUn = uIdx === unassignedAccounts.length - 1;
+              const uPrefix = isLastUn ? '    ┗━' : '    ┣━';
+              const icon = item.data.type === 'bot' ? '🤖' : '👤';
+              lines.push(
+                `${uPrefix} ${icon} [${item.data.type}] ${item.data.account.first_login_name || '未設定'} (${item.data.status}) - MID: ${item.data.mid || 'なし'} (UUID: ${item.uuid})`
+              );
+            });
+          }
+        }
+
+        lines.push('```');
+        await interaction.reply({ content: lines.join('\n'), ephemeral: true });
         return;
       }
 
@@ -345,19 +532,18 @@ export class DiscordBot {
           await interaction.reply({ content: '4sim.net APIキーが未設定です。先に /set_4sim_api_key で設定してください。', ephemeral: true });
           return;
         }
+        await interaction.deferReply({ ephemeral: true });
         const country = interaction.options.getString('country') || 'thailand';
         const fourSim = new FourSimClient(config.fourSimApiKey);
         try {
           const order = await fourSim.orderNumber('line', country);
-          await interaction.reply({
+          await interaction.editReply({
             content: `📱 4sim.net で電話番号を発行しました。\n• 注文ID: \`${order.id}\`\n• 電話番号: \`${order.phone}\`\n• 状態: ${order.status}`,
-            ephemeral: true,
           });
         } catch (err: unknown) {
           const errorMessage = err instanceof Error ? err.message : String(err);
-          await interaction.reply({
+          await interaction.editReply({
             content: `電話番号の発行に失敗しました: ${errorMessage}`,
-            ephemeral: true,
           });
         }
         return;
