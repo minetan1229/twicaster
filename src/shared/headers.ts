@@ -18,7 +18,6 @@ export function buildRequestHeaders(
   url: string
 ): Record<string, string> {
   const urlObj = new URL(url);
-  const isTwitCasting = urlObj.hostname.endsWith('twitcasting.tv');
   const isDownloadDomain = urlObj.hostname.startsWith('dl') && urlObj.hostname.endsWith('twitcasting.tv');
   
   const headers: Record<string, string> = {

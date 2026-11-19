@@ -506,7 +506,6 @@ var DEFAULT_HEADERS = {
 var DEFAULT_USER_AGENT = typeof navigator !== "undefined" ? navigator.userAgent : "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36";
 function buildRequestHeaders(stream, url) {
   const urlObj = new URL(url);
-  const isTwitCasting = urlObj.hostname.endsWith("twitcasting.tv");
   const isDownloadDomain = urlObj.hostname.startsWith("dl") && urlObj.hostname.endsWith("twitcasting.tv");
   const headers = {
     ...DEFAULT_HEADERS,
