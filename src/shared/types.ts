@@ -113,6 +113,25 @@ export interface DownloadHistoryItem {
   error?: string;
 }
 
+export interface DebugLogEntry {
+  timestamp: number;
+  source: 'popup' | 'background' | 'offscreen';
+  level: 'info' | 'warn' | 'error';
+  message: string;
+  details?: unknown;
+}
+
+export interface PopupState {
+  currentStreamId: string | null;
+  startSeconds: string;
+  startHhmmss: string;
+  endSeconds: string;
+  endHhmmss: string;
+  quality: string;
+  outputFilename: string;
+  debugModeEnabled?: boolean;
+}
+
 export interface Message {
   type: string;
   payload?: unknown;
@@ -140,6 +159,12 @@ export const MessageType = {
   DELETE_HISTORY: 'DELETE_HISTORY',
   OFFSCREEN_READY: 'OFFSCREEN_READY',
   CHECK_OFFSCREEN: 'CHECK_OFFSCREEN',
+  DEBUG_LOG: 'DEBUG_LOG',
+  GET_DEBUG_LOGS: 'GET_DEBUG_LOGS',
+  DEBUG_LOGS_RESPONSE: 'DEBUG_LOGS_RESPONSE',
+  CLEAR_DEBUG_LOGS: 'CLEAR_DEBUG_LOGS',
+  GET_DOWNLOAD_STATUS: 'GET_DOWNLOAD_STATUS',
+  DOWNLOAD_STATUS_RESPONSE: 'DOWNLOAD_STATUS_RESPONSE',
 } as const;
 
 export type MessageTypeValue = typeof MessageType[keyof typeof MessageType];
