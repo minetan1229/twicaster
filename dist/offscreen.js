@@ -323,7 +323,18 @@ var MessageType = {
   DOWNLOAD_PROGRESS: "DOWNLOAD_PROGRESS",
   DOWNLOAD_COMPLETE: "DOWNLOAD_COMPLETE",
   DOWNLOAD_ERROR: "DOWNLOAD_ERROR",
-  CONTENT_READY: "CONTENT_READY"
+  CONTENT_READY: "CONTENT_READY",
+  CURRENT_TIME_UPDATE: "CURRENT_TIME_UPDATE",
+  GET_CURRENT_TIME: "GET_CURRENT_TIME",
+  CURRENT_TIME_RESPONSE: "CURRENT_TIME_RESPONSE",
+  STOP_RECORDING: "STOP_RECORDING",
+  STOP_DOWNLOAD: "STOP_DOWNLOAD",
+  RECORDING_STATE_CHANGE: "RECORDING_STATE_CHANGE",
+  DELETE_STREAM: "DELETE_STREAM",
+  CLEAR_ALL_STREAMS: "CLEAR_ALL_STREAMS",
+  GET_HISTORY: "GET_HISTORY",
+  HISTORY_LIST: "HISTORY_LIST",
+  DELETE_HISTORY: "DELETE_HISTORY"
 };
 
 // src/shared/hls.ts
@@ -403,7 +414,7 @@ function parseMediaPlaylist(text, baseUrl) {
   const segments = [];
   let targetDuration = 0;
   let mediaSequence = 0;
-  let isLive = false;
+  let isLive = true;
   let totalDuration = 0;
   let currentKey = null;
   let currentMap = null;
@@ -484,6 +495,7 @@ var DEFAULT_HEADERS = {
   "Sec-Fetch-Site": "cross-site",
   "Priority": "u=1, i"
 };
+var DEFAULT_USER_AGENT = typeof navigator !== "undefined" ? navigator.userAgent : "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36";
 function buildRequestHeaders(stream, url) {
   const urlObj = new URL(url);
   const isTwitCasting = urlObj.hostname.endsWith("twitcasting.tv");
@@ -492,7 +504,7 @@ function buildRequestHeaders(stream, url) {
     ...DEFAULT_HEADERS,
     "Origin": "https://twitcasting.tv",
     "Referer": "https://twitcasting.tv/",
-    "User-Agent": navigator.userAgent
+    "User-Agent": DEFAULT_USER_AGENT
   };
   if (stream.headers.Cookie) {
     headers["Cookie"] = stream.headers.Cookie;
@@ -507,6 +519,10 @@ function buildRequestHeaders(stream, url) {
 // src/offscreen/offscreen.ts
 var ffmpeg = null;
 var ffmpegLoaded = false;
+var activeDownloads = /* @__PURE__ */ new Map();
+var MAX_PARALLEL_DOWNLOADS = 3;
+var MAX_RETRIES = 3;
+var RETRY_BASE_DELAY = 1e3;
 async function initFFmpeg() {
   if (ffmpegLoaded && ffmpeg) return;
   ffmpeg = new FFmpeg();
@@ -514,7 +530,7 @@ async function initFFmpeg() {
     reportProgress({
       stage: "processing",
       progress: Math.round(progress.progress * 100),
-      message: `FFmpeg processing: ${Math.round(progress.progress * 100)}%`
+      message: `FFmpeg\u51E6\u7406\u4E2D: ${Math.round(progress.progress * 100)}%`
     });
   });
   await ffmpeg.load({
@@ -525,69 +541,154 @@ async function initFFmpeg() {
 function reportProgress(progress) {
   chrome.runtime.sendMessage({ type: MessageType.DOWNLOAD_PROGRESS, payload: progress });
 }
-async function fetchWithHeaders(url, headers) {
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+async function fetchWithRetry(url, headers, signal, retries = MAX_RETRIES) {
   const requestHeaders = new Headers();
   for (const [key, value] of Object.entries(headers)) {
     requestHeaders.set(key, value);
   }
-  return fetch(url, {
-    method: "GET",
-    headers: requestHeaders,
-    credentials: "include"
-  });
-}
-async function downloadPlaylist(url, headers) {
-  const response = await fetchWithHeaders(url, headers);
-  if (!response.ok) {
-    throw new Error(`Failed to fetch playlist: ${response.status} ${response.statusText}`);
+  let lastError = null;
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    if (signal.aborted) {
+      throw new DOMException("Aborted", "AbortError");
+    }
+    try {
+      const response = await fetch(url, {
+        method: "GET",
+        headers: requestHeaders,
+        credentials: "include",
+        signal
+      });
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+      }
+      return response;
+    } catch (error) {
+      lastError = error instanceof Error ? error : new Error(String(error));
+      if (signal.aborted || error instanceof DOMException && error.name === "AbortError") {
+        throw lastError;
+      }
+      if (attempt < retries) {
+        const delay = RETRY_BASE_DELAY * Math.pow(2, attempt);
+        reportProgress({
+          stage: "downloading",
+          progress: 0,
+          message: `\u30EA\u30C8\u30E9\u30A4 ${attempt + 1}/${retries} (${delay}ms\u5F8C): ${lastError.message}`
+        });
+        await sleep(delay);
+      }
+    }
   }
+  throw lastError;
+}
+async function downloadPlaylist(url, headers, signal) {
+  const response = await fetchWithRetry(url, headers, signal);
   return response.text();
 }
-async function downloadSegment(url, headers) {
-  const response = await fetchWithHeaders(url, headers);
-  if (!response.ok) {
-    throw new Error(`Failed to fetch segment: ${response.status} ${response.statusText}`);
-  }
+async function downloadSegment(url, headers, signal) {
+  const response = await fetchWithRetry(url, headers, signal);
   const arrayBuffer = await response.arrayBuffer();
   return new Uint8Array(arrayBuffer);
 }
-async function clipVideo(masterUrl, headers, startTime, endTime, outputFilename) {
+async function downloadSegmentsParallel(segments, headers, signal, onProgress) {
+  const results = new Array(segments.length);
+  let completed = 0;
+  const startTime = Date.now();
+  let totalBytes = 0;
+  const queue = [...segments];
+  async function worker() {
+    while (queue.length > 0 && !signal.aborted) {
+      const item = queue.shift();
+      try {
+        const data = await downloadSegment(item.uri, headers, signal);
+        results[item.index] = data;
+        totalBytes += data.length;
+      } catch (error) {
+        results[item.index] = error instanceof Error ? error : new Error(String(error));
+      }
+      completed++;
+      const elapsed = (Date.now() - startTime) / 1e3;
+      const speed = elapsed > 0 ? totalBytes / elapsed : 0;
+      const remaining = segments.length - completed;
+      const avgSegmentSize = completed > 0 ? totalBytes / completed : 0;
+      const eta = speed > 0 && avgSegmentSize > 0 ? remaining * avgSegmentSize / speed : 0;
+      onProgress(completed, segments.length, speed, eta);
+    }
+  }
+  const workers = Array.from({ length: Math.min(MAX_PARALLEL_DOWNLOADS, segments.length) }, () => worker());
+  await Promise.all(workers);
+  if (signal.aborted) {
+    throw new DOMException("Aborted", "AbortError");
+  }
+  const errors = results.filter((r) => r instanceof Error);
+  if (errors.length > 0) {
+    throw new Error(`\u30BB\u30B0\u30E1\u30F3\u30C8\u306E\u30C0\u30A6\u30F3\u30ED\u30FC\u30C9\u306B\u5931\u6557: ${errors.length}/${segments.length} - ${errors[0].message}`);
+  }
+  return results;
+}
+async function clipVideo(masterUrl, headers, startTime, endTime, outputFilename, signal, mediaUrl, mediaVariants) {
   await initFFmpeg();
-  if (!ffmpeg) throw new Error("FFmpeg not initialized");
-  reportProgress({ stage: "fetching", progress: 10, message: "Fetching master playlist..." });
-  const masterPlaylistText = await downloadPlaylist(masterUrl, headers);
-  const baseUrl = masterUrl.substring(0, masterUrl.lastIndexOf("/") + 1);
-  const variants = parseMasterPlaylist(masterPlaylistText, baseUrl);
-  if (variants.length === 0) {
-    throw new Error("No variants found in master playlist");
+  const ffmpegInstance = ffmpeg;
+  if (!ffmpegInstance) throw new Error("FFmpeg\u304C\u521D\u671F\u5316\u3055\u308C\u3066\u3044\u307E\u305B\u3093");
+  const abortSignal = signal || new AbortSignal();
+  reportProgress({ stage: "fetching", progress: 5, message: "\u30D7\u30EC\u30A4\u30EA\u30B9\u30C8\u3092\u53D6\u5F97\u4E2D..." });
+  let mediaPlaylistText;
+  let mediaBaseUrl;
+  if (mediaUrl) {
+    mediaPlaylistText = await downloadPlaylist(mediaUrl, headers, abortSignal);
+    mediaBaseUrl = mediaUrl.substring(0, mediaUrl.lastIndexOf("/") + 1);
+  } else {
+    reportProgress({ stage: "fetching", progress: 5, message: "\u30DE\u30B9\u30BF\u30FC\u30D7\u30EC\u30A4\u30EA\u30B9\u30C8\u3092\u53D6\u5F97\u4E2D..." });
+    const masterPlaylistText = await downloadPlaylist(masterUrl, headers, abortSignal);
+    const baseUrl = masterUrl.substring(0, masterUrl.lastIndexOf("/") + 1);
+    const variants = mediaVariants || parseMasterPlaylist(masterPlaylistText, baseUrl);
+    if (variants.length === 0) {
+      throw new Error("\u30DE\u30B9\u30BF\u30FC\u30D7\u30EC\u30A4\u30EA\u30B9\u30C8\u306B\u30D0\u30EA\u30A2\u30F3\u30C8\u304C\u898B\u3064\u304B\u308A\u307E\u305B\u3093");
+    }
+    const selectedVariant = selectHighestQuality(variants);
+    if (!selectedVariant) {
+      throw new Error("\u753B\u8CEA\u30D0\u30EA\u30A2\u30F3\u30C8\u306E\u9078\u629E\u306B\u5931\u6557\u3057\u307E\u3057\u305F");
+    }
+    reportProgress({ stage: "fetching", progress: 15, message: "\u30E1\u30C7\u30A3\u30A2\u30D7\u30EC\u30A4\u30EA\u30B9\u30C8\u3092\u53D6\u5F97\u4E2D..." });
+    mediaPlaylistText = await downloadPlaylist(selectedVariant.uri, headers, abortSignal);
+    mediaBaseUrl = selectedVariant.uri.substring(0, selectedVariant.uri.lastIndexOf("/") + 1);
   }
-  const selectedVariant = selectHighestQuality(variants);
-  if (!selectedVariant) {
-    throw new Error("Failed to select quality variant");
-  }
-  reportProgress({ stage: "fetching", progress: 30, message: "Fetching media playlist..." });
-  const mediaPlaylistText = await downloadPlaylist(selectedVariant.uri, headers);
-  const mediaBaseUrl = selectedVariant.uri.substring(0, selectedVariant.uri.lastIndexOf("/") + 1);
   const mediaPlaylist = parseMediaPlaylist(mediaPlaylistText, mediaBaseUrl);
   const segmentsInRange = selectSegmentsInRange(mediaPlaylist, startTime, endTime);
   if (segmentsInRange.length === 0) {
-    throw new Error("No segments found in specified time range");
+    throw new Error("\u6307\u5B9A\u3055\u308C\u305F\u6642\u9593\u7BC4\u56F2\u306B\u30BB\u30B0\u30E1\u30F3\u30C8\u304C\u898B\u3064\u304B\u308A\u307E\u305B\u3093");
   }
-  reportProgress({ stage: "downloading", progress: 40, message: `Downloading ${segmentsInRange.length} segments...` });
+  reportProgress({ stage: "downloading", progress: 20, message: `${segmentsInRange.length}\u500B\u306E\u30BB\u30B0\u30E1\u30F3\u30C8\u3092\u30C0\u30A6\u30F3\u30ED\u30FC\u30C9\u4E2D...` });
   const segmentFiles = [];
-  for (let i = 0; i < segmentsInRange.length; i++) {
-    const segment = segmentsInRange[i];
+  const segmentsWithIndex = segmentsInRange.map((segment, index) => ({ uri: segment.uri, index }));
+  const segmentDataArray = await downloadSegmentsParallel(
+    segmentsWithIndex,
+    headers,
+    abortSignal,
+    (completed, total, speed, eta) => {
+      const progress = 20 + Math.round(completed / total * 50);
+      reportProgress({
+        stage: "downloading",
+        progress,
+        message: `\u30C0\u30A6\u30F3\u30ED\u30FC\u30C9\u6E08\u307F: ${completed}/${total} \u30BB\u30B0\u30E1\u30F3\u30C8`,
+        speed,
+        eta,
+        segmentsDownloaded: completed,
+        segmentsTotal: total
+      });
+    }
+  );
+  for (let i = 0; i < segmentDataArray.length; i++) {
     const segmentFilename = `segment_${i}.ts`;
-    const segmentData = await downloadSegment(segment.uri, headers);
-    await ffmpeg.writeFile(segmentFilename, segmentData);
+    await ffmpegInstance.writeFile(segmentFilename, segmentDataArray[i]);
     segmentFiles.push(segmentFilename);
-    const progress = 40 + Math.round(i / segmentsInRange.length * 40);
-    reportProgress({ stage: "downloading", progress, message: `Downloaded ${i + 1}/${segmentsInRange.length} segments` });
   }
-  reportProgress({ stage: "processing", progress: 80, message: "Concatenating segments..." });
+  reportProgress({ stage: "processing", progress: 75, message: "\u30BB\u30B0\u30E1\u30F3\u30C8\u3092\u7D50\u5408\u4E2D..." });
   const concatList = segmentFiles.map((f) => `file '${f}'`).join("\n");
-  await ffmpeg.writeFile("concat.list", concatList);
-  await ffmpeg.exec([
+  await ffmpegInstance.writeFile("concat.list", concatList);
+  await ffmpegInstance.exec([
     "-y",
     "-f",
     "concat",
@@ -601,46 +702,220 @@ async function clipVideo(masterUrl, headers, startTime, endTime, outputFilename)
     "+faststart",
     outputFilename
   ]);
-  reportProgress({ stage: "processing", progress: 95, message: "Finalizing..." });
-  const outputData = await ffmpeg.readFile(outputFilename);
+  reportProgress({ stage: "processing", progress: 95, message: "\u30D5\u30A1\u30A4\u30EB\u3092\u6700\u7D42\u51E6\u7406\u4E2D..." });
+  const outputData = await ffmpegInstance.readFile(outputFilename);
   const blob = new Blob([outputData], { type: "video/mp4" });
   for (const file of segmentFiles) {
-    await ffmpeg.deleteFile?.(file) || ffmpeg.writeFile(file, new Uint8Array(0));
+    void (await ffmpegInstance.deleteFile?.(file) || ffmpegInstance.writeFile(file, new Uint8Array(0)));
   }
-  await ffmpeg.deleteFile?.("concat.list") || ffmpeg.writeFile("concat.list", new Uint8Array(0));
-  await ffmpeg.deleteFile?.(outputFilename) || ffmpeg.writeFile(outputFilename, new Uint8Array(0));
-  reportProgress({ stage: "complete", progress: 100, message: "Download complete!" });
+  void (await ffmpegInstance.deleteFile?.("concat.list") || ffmpegInstance.writeFile("concat.list", new Uint8Array(0)));
+  void (await ffmpegInstance.deleteFile?.(outputFilename) || ffmpegInstance.writeFile(outputFilename, new Uint8Array(0)));
+  reportProgress({ stage: "complete", progress: 100, message: "\u30C0\u30A6\u30F3\u30ED\u30FC\u30C9\u5B8C\u4E86\uFF01" });
   return blob;
+}
+var LIVE_POLL_INTERVAL = 15e3;
+var FLUSH_INTERVAL = 3e4;
+async function recordLiveStream(mediaUrl, headers, startTime, endTime, outputFilename, signal) {
+  await initFFmpeg();
+  const ffmpegInstance = ffmpeg;
+  if (!ffmpegInstance) throw new Error("FFmpeg\u304C\u521D\u671F\u5316\u3055\u308C\u3066\u3044\u307E\u305B\u3093");
+  const abortSignal = signal || new AbortSignal();
+  const segmentFiles = [];
+  let segmentIndex = 0;
+  let lastMediaSequence = -1;
+  let concatListContent = "";
+  let lastFlushTime = Date.now();
+  reportProgress({ stage: "fetching", progress: 5, message: "\u30E9\u30A4\u30D6\u9332\u753B\u3092\u958B\u59CB\u4E2D..." });
+  const flushSegments = async (force = false) => {
+    const now = Date.now();
+    if (!force && now - lastFlushTime < FLUSH_INTERVAL && segmentFiles.length < 100) {
+      return;
+    }
+    if (segmentFiles.length === 0) return;
+    reportProgress({ stage: "processing", progress: 70, message: `${segmentFiles.length}\u500B\u306E\u30BB\u30B0\u30E1\u30F3\u30C8\u3092\u30D5\u30E9\u30C3\u30B7\u30E5\u4E2D...` });
+    concatListContent = segmentFiles.map((f) => `file '${f}'`).join("\n");
+    await ffmpegInstance.writeFile("concat.list", concatListContent);
+    const tempOutput = `temp_${Date.now()}.mp4`;
+    await ffmpegInstance.exec([
+      "-y",
+      "-f",
+      "concat",
+      "-safe",
+      "0",
+      "-i",
+      "concat.list",
+      "-c",
+      "copy",
+      "-movflags",
+      "+faststart",
+      tempOutput
+    ]);
+    for (const file of segmentFiles) {
+      void (await ffmpegInstance.deleteFile?.(file) || ffmpegInstance.writeFile(file, new Uint8Array(0)));
+    }
+    segmentFiles.length = 0;
+    void (await ffmpegInstance.deleteFile?.("concat.list") || ffmpegInstance.writeFile("concat.list", new Uint8Array(0)));
+    segmentFiles.push(tempOutput);
+    lastFlushTime = now;
+  };
+  const pollAndDownload = async () => {
+    while (!abortSignal.aborted) {
+      try {
+        reportProgress({ stage: "fetching", progress: 10, message: "\u30E9\u30A4\u30D6\u30D7\u30EC\u30A4\u30EA\u30B9\u30C8\u3092\u53D6\u5F97\u4E2D..." });
+        const mediaPlaylistText = await downloadPlaylist(mediaUrl, headers, abortSignal);
+        const mediaBaseUrl = mediaUrl.substring(0, mediaUrl.lastIndexOf("/") + 1);
+        const mediaPlaylist = parseMediaPlaylist(mediaPlaylistText, mediaBaseUrl);
+        if (lastMediaSequence === -1) {
+          lastMediaSequence = mediaPlaylist.mediaSequence;
+        }
+        const startIndex = lastMediaSequence - mediaPlaylist.mediaSequence + 1;
+        const newSegments = mediaPlaylist.segments.slice(Math.max(0, startIndex));
+        for (const segment of newSegments) {
+          if (abortSignal.aborted) break;
+          const segmentFilename = `segment_${segmentIndex}.ts`;
+          reportProgress({
+            stage: "downloading",
+            progress: 20 + Math.min(50, segmentIndex * 2),
+            message: `\u30BB\u30B0\u30E1\u30F3\u30C8 ${segmentIndex + 1} \u3092\u9332\u753B\u4E2D...`
+          });
+          const segmentData = await downloadSegment(segment.uri, headers, abortSignal);
+          await ffmpegInstance.writeFile(segmentFilename, segmentData);
+          segmentFiles.push(segmentFilename);
+          segmentIndex++;
+        }
+        lastMediaSequence = mediaPlaylist.mediaSequence + mediaPlaylist.segments.length - 1;
+        await flushSegments();
+        if (abortSignal.aborted) break;
+        await new Promise((resolve) => setTimeout(resolve, LIVE_POLL_INTERVAL));
+      } catch (error) {
+        if (abortSignal.aborted) break;
+        reportProgress({
+          stage: "error",
+          progress: 0,
+          message: `\u30DD\u30FC\u30EA\u30F3\u30B0\u30A8\u30E9\u30FC: ${error instanceof Error ? error.message : "\u4E0D\u660E\u306A\u30A8\u30E9\u30FC"}`,
+          error: error instanceof Error ? error.message : "\u4E0D\u660E\u306A\u30A8\u30E9\u30FC"
+        });
+        await new Promise((resolve) => setTimeout(resolve, 5e3));
+      }
+    }
+    await flushSegments(true);
+    if (segmentFiles.length === 0) {
+      throw new Error("\u9332\u753B\u3055\u308C\u305F\u30BB\u30B0\u30E1\u30F3\u30C8\u304C\u3042\u308A\u307E\u305B\u3093");
+    }
+    reportProgress({ stage: "processing", progress: 90, message: "\u9332\u753B\u3092\u6700\u7D42\u51E6\u7406\u4E2D..." });
+    concatListContent = segmentFiles.map((f) => `file '${f}'`).join("\n");
+    await ffmpegInstance.writeFile("concat.list", concatListContent);
+    await ffmpegInstance.exec([
+      "-y",
+      "-f",
+      "concat",
+      "-safe",
+      "0",
+      "-i",
+      "concat.list",
+      "-c",
+      "copy",
+      "-movflags",
+      "+faststart",
+      outputFilename
+    ]);
+    for (const file of segmentFiles) {
+      void (await ffmpegInstance.deleteFile?.(file) || ffmpegInstance.writeFile(file, new Uint8Array(0)));
+    }
+    void (await ffmpegInstance.deleteFile?.("concat.list") || ffmpegInstance.writeFile("concat.list", new Uint8Array(0)));
+    for (const file of segmentFiles) {
+      if (file.startsWith("temp_")) {
+        void (await ffmpegInstance.deleteFile?.(file) || ffmpegInstance.writeFile(file, new Uint8Array(0)));
+      }
+    }
+    reportProgress({ stage: "processing", progress: 95, message: "\u30D5\u30A1\u30A4\u30EB\u3092\u6700\u7D42\u51E6\u7406\u4E2D..." });
+    const outputData = await ffmpegInstance.readFile(outputFilename);
+    const blob = new Blob([outputData], { type: "video/mp4" });
+    void (await ffmpegInstance.deleteFile?.(outputFilename) || ffmpegInstance.writeFile(outputFilename, new Uint8Array(0)));
+    reportProgress({ stage: "complete", progress: 100, message: "\u30E9\u30A4\u30D6\u9332\u753B\u5B8C\u4E86\uFF01" });
+    return blob;
+  };
+  return pollAndDownload();
 }
 chrome.runtime.onMessage.addListener(async (message) => {
   if (message.type === MessageType.DOWNLOAD_STREAM) {
     const payload = message.payload;
+    const controller = new AbortController();
+    activeDownloads.set(payload.streamId, controller);
     try {
       const requestHeaders = buildRequestHeaders(
         { masterUrl: payload.masterUrl, headers: payload.headers },
         payload.masterUrl
       );
-      const blob = await clipVideo(
-        payload.masterUrl,
-        requestHeaders,
-        payload.startTime,
-        payload.endTime,
-        payload.outputFilename
-      );
+      let blob;
+      if (payload.isLive) {
+        blob = await recordLiveStream(
+          payload.masterUrl,
+          requestHeaders,
+          payload.startTime,
+          payload.endTime,
+          payload.outputFilename,
+          controller.signal
+        );
+      } else {
+        blob = await clipVideo(
+          payload.masterUrl,
+          requestHeaders,
+          payload.startTime,
+          payload.endTime,
+          payload.outputFilename,
+          controller.signal,
+          void 0,
+          payload.variants
+        );
+      }
       const url = URL.createObjectURL(blob);
-      await chrome.downloads.download({
-        url,
-        filename: payload.outputFilename,
-        saveAs: true
+      const downloadId = await new Promise((resolve) => {
+        chrome.downloads.download({
+          url,
+          filename: payload.outputFilename,
+          saveAs: true
+        }, (downloadId2) => {
+          if (chrome.runtime.lastError) {
+            console.error("Download error:", chrome.runtime.lastError);
+            resolve(void 0);
+          } else {
+            resolve(downloadId2);
+          }
+        });
       });
       URL.revokeObjectURL(url);
-      chrome.runtime.sendMessage({ type: MessageType.DOWNLOAD_COMPLETE, payload: { streamId: payload.streamId } });
+      if (downloadId) {
+        await new Promise((resolve) => {
+          const listener = (delta) => {
+            if (delta.id === downloadId && delta.state && delta.state.current === "complete") {
+              chrome.downloads.onChanged.removeListener(listener);
+              resolve();
+            } else if (delta.id === downloadId && delta.state && delta.state.current === "interrupted") {
+              chrome.downloads.onChanged.removeListener(listener);
+              resolve();
+            }
+          };
+          chrome.downloads.onChanged.addListener(listener);
+        });
+      }
+      chrome.runtime.sendMessage({ type: MessageType.DOWNLOAD_COMPLETE, payload: { streamId: payload.streamId, historyId: payload.historyId, fileSize: blob.size } });
     } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : "Unknown error";
-      reportProgress({ stage: "error", progress: 0, message: "Download failed", error: errorMessage });
-      chrome.runtime.sendMessage({ type: MessageType.DOWNLOAD_ERROR, payload: { error: errorMessage } });
+      const errorMessage = error instanceof Error ? error.message : "\u4E0D\u660E\u306A\u30A8\u30E9\u30FC";
+      reportProgress({ stage: "error", progress: 0, message: "\u30C0\u30A6\u30F3\u30ED\u30FC\u30C9\u306B\u5931\u6557\u3057\u307E\u3057\u305F", error: errorMessage });
+      chrome.runtime.sendMessage({ type: MessageType.DOWNLOAD_ERROR, payload: { streamId: payload.streamId, historyId: payload.historyId, error: errorMessage } });
+    } finally {
+      activeDownloads.delete(payload.streamId);
+    }
+  }
+  if (message.type === MessageType.STOP_DOWNLOAD) {
+    const { streamId } = message.payload;
+    const controller = activeDownloads.get(streamId);
+    if (controller) {
+      controller.abort();
+      activeDownloads.delete(streamId);
     }
   }
 });
-console.log("Offscreen document loaded");
+console.log("\u30AA\u30D5\u30B9\u30AF\u30EA\u30FC\u30F3\u30C9\u30AD\u30E5\u30E1\u30F3\u30C8\u304C\u8AAD\u307F\u8FBC\u307E\u308C\u307E\u3057\u305F");
 //# sourceMappingURL=offscreen.js.map

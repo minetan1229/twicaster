@@ -1,4 +1,4 @@
-import { HLSVariant, HLSSegment, HLSKey, HLSMap, MediaPlaylist } from './types';
+import { HLSVariant, HLSSegment, HLSKey, HLSMap, MediaPlaylist, LiveStreamInfo } from './types';
 
 function parseResolution(resolution: string): { width: number; height: number } | null {
   const match = resolution.match(/(\d+)x(\d+)/);
@@ -170,4 +170,22 @@ export function selectSegmentsInRange(
   }
 
   return selectedSegments;
+}
+
+export function extractLiveInfo(playlist: MediaPlaylist): LiveStreamInfo {
+  const info: LiveStreamInfo = { isLive: playlist.isLive };
+  
+  if (playlist.programDateTime) {
+    info.programDateTime = playlist.programDateTime;
+  }
+  
+  if (playlist.canSkipUntil !== undefined) {
+    info.canSkipUntil = playlist.canSkipUntil;
+  }
+  
+  // Server time would need to be extracted from EXT-X-PROGRAM-DATE-TIME or similar
+  // For now, use current time as fallback
+  info.serverTime = Date.now() / 1000;
+  
+  return info;
 }
