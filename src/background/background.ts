@@ -36,21 +36,27 @@ async function attachDebugger(tabId: number): Promise<void> {
     await chrome.debugger.sendCommand({ tabId }, 'Network.setCacheDisabled', { cacheDisabled: true });
     debuggerTabs.add(tabId);
     console.log(`Debugger attached to tab ${tabId}`);
-  } catch (error) {
-    console.error('Failed to attach debugger:', error);
-    throw error;
+  } catch (error: unknown) {
+    const errorMsg = error instanceof Error ? error.message : String(error);
+    if (errorMsg.includes('Another debugger is already attached')) {
+      debuggerTabs.add(tabId);
+      console.log(`Debugger was already attached to tab ${tabId}`);
+      return;
+    }
+    console.warn(`Failed to attach debugger to tab ${tabId}:`, errorMsg);
   }
 }
 
 async function detachDebugger(tabId: number): Promise<void> {
-  if (!debuggerTabs.has(tabId)) return;
-  
+  debuggerTabs.delete(tabId);
   try {
     await chrome.debugger.detach({ tabId });
-    debuggerTabs.delete(tabId);
     console.log(`Debugger detached from tab ${tabId}`);
-  } catch (error) {
-    console.error('Failed to detach debugger:', error);
+  } catch (error: unknown) {
+    const errorMsg = error instanceof Error ? error.message : String(error);
+    if (!errorMsg.includes('No tab with given id') && !errorMsg.includes('Not attached')) {
+      console.warn(`Failed to detach debugger from tab ${tabId}:`, errorMsg);
+    }
   }
 }
 
@@ -427,6 +433,7 @@ chrome.runtime.onMessage.addListener((message: Message, sender, sendResponse) =>
             historyId: historyEntry.id,
           },
         });
+        sendResponse({ success: true });
       } catch (error) {
         recordingStates.delete(streamId);
         const errMsg = error instanceof Error ? error.message : 'オフスクリーンドキュメントの初期化に失敗しました';
@@ -434,6 +441,7 @@ chrome.runtime.onMessage.addListener((message: Message, sender, sendResponse) =>
           type: MessageType.DOWNLOAD_ERROR,
           payload: { streamId, error: errMsg },
         });
+        sendResponse({ success: false, error: errMsg });
       }
     })();
     
