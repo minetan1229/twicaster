@@ -333,3 +333,78 @@ footer {
   font-size: 11px;
   color: #5f6368;
 }
+
+.debug-toggle-label {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  cursor: pointer;
+  user-select: none;
+  font-weight: 500;
+  color: #5f6368;
+}
+
+.debug-section {
+  margin-top: 12px;
+  border: 1px solid #dadce0;
+  border-radius: 6px;
+  background: #f8f9fa;
+  padding: 8px;
+  max-height: 200px;
+  display: flex;
+  flex-direction: column;
+}
+
+.debug-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-weight: 600;
+  font-size: 11px;
+  margin-bottom: 6px;
+  color: #3c4043;
+}
+
+.btn-xs {
+  font-size: 10px;
+  padding: 2px 6px;
+  border: 1px solid #dadce0;
+  border-radius: 4px;
+  background: #fff;
+  cursor: pointer;
+  margin-left: 4px;
+}
+
+.btn-xs:hover {
+  background: #f1f3f4;
+}
+
+.debug-logs {
+  font-family: monospace;
+  font-size: 10px;
+  line-height: 1.4;
+  overflow-y: auto;
+  max-height: 140px;
+  white-space: pre-wrap;
+  word-break: break-all;
+  background: #202124;
+  color: #e8eaed;
+  padding: 6px;
+  border-radius: 4px;
+}
+
+.debug-log-entry {
+  margin-bottom: 2px;
+}
+
+.debug-log-entry.error {
+  color: #f28b82;
+}
+
+.debug-log-entry.warn {
+  color: #fdd663;
+}
+
+.debug-log-entry.info {
+  color: #8ab4f8;
+}
